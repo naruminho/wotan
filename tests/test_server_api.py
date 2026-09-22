@@ -25,9 +25,76 @@ def test_health(ws, db, monkeypatch, tmp_path):
     assert r.json()["app"] == "Wotan"
 
 
+def test_switch_workspace(ws, db, monkeypatch, tmp_path):
+    client = make_client(ws, db, monkeypatch, tmp_path)
+    other = tmp_path / "other_project"
+    other.mkdir()
+    (other / "readme.txt").write_text("hi\n", encoding="utf-8")
+
+    r = client.post("/api/workspace", json={"path": str(other)})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["workspace"] == str(other.resolve())
+
+    # health() must reflect the switch, not the folder the server started in
+    r = client.get("/api/health")
+    assert r.json()["workspace"] == str(other.resolve())
+
+    # and fs routes must now be scoped to the new folder
+    r = client.get("/api/fs/tree", params={"path": ""})
+    names = {e["name"] for e in r.json()["entries"]}
+    assert "readme.txt" in names
+
+
+def test_browse_dirs_lists_subdirectories(ws, db, monkeypatch, tmp_path):
+    client = make_client(ws, db, monkeypatch, tmp_path)
+    root = tmp_path / "browse_root"
+    (root / "sub_a").mkdir(parents=True)
+    (root / "sub_b").mkdir()
+    (root / "a_file.txt").write_text("x", encoding="utf-8")
+
+    r = client.get("/api/browse-dirs", params={"path": str(root)})
+    assert r.status_code == 200
+    body = r.json()
+    names = {d["name"] for d in body["dirs"]}
+    assert names == {"sub_a", "sub_b"}  # files must not show up
+    assert body["parent"] == str(root.parent)
+
+
+def test_browse_dirs_empty_path_lists_roots(ws, db, monkeypatch, tmp_path):
+    client = make_client(ws, db, monkeypatch, tmp_path)
+    r = client.get("/api/browse-dirs", params={"path": ""})
+    assert r.status_code == 200
+    assert len(r.json()["dirs"]) > 0
+
+
+def test_browse_dirs_rejects_nonexistent(ws, db, monkeypatch, tmp_path):
+    client = make_client(ws, db, monkeypatch, tmp_path)
+    r = client.get("/api/browse-dirs", params={"path": str(tmp_path / "nope")})
+    assert "error" in r.json()
+
+
+def test_switch_workspace_rejects_missing_path(ws, db, monkeypatch, tmp_path):
+    client = make_client(ws, db, monkeypatch, tmp_path)
+    r = client.post("/api/workspace", json={"path": str(tmp_path / "does_not_exist")})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+
+def test_skills_endpoint(ws, db, monkeypatch, tmp_path):
+    # Regression: this route used to reference an undeclared 'request' name
+    # (missing the `request: Request` parameter) and crashed with a 500 on
+    # every load, hanging the whole chat UI.
+    client = make_client(ws, db, monkeypatch, tmp_path)
+    r = client.get("/api/skills")
+    assert r.status_code == 200
+    assert "skills" in r.json()
+
+
 def test_fs_file_roundtrip(ws, db, monkeypatch, tmp_path):
     client = make_client(ws, db, monkeypatch, tmp_path)
-    (ws / "hello.py").write_text("print('olá')\n", encoding="utf-8")
+    (ws / "hello.py").write_text("print('olá')\n", encoding="utf-8", newline="")
     r = client.get("/api/fs/file", params={"path": "hello.py"})
     data = r.json()
     assert "olá" in data["content"]

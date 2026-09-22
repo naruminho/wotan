@@ -348,6 +348,7 @@ def _parse_provider(d: dict[str, Any]) -> ProviderConfig:
         {k: v for k, v in d.items() if k != "models"},
         id=d.get("id", ""),
         type=d.get("type", ""),
+        api_key_ref=d.get("api_key", d.get("api_key_ref", "")),
     )
     prov.models = models
     prov.raw = dict(d)

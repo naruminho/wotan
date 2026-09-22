@@ -30,11 +30,15 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .agent.session import AgentSession
+from .providers.base import Attachment
+
+MAX_ATTACHMENT_B64_CHARS = 8_000_000  # ~6MB raw after base64 decoding
+AGENT_TERMINAL_STATUSES = {"idle", "done", "error", "stopped"}
 from .config import AppConfig, load_config, save_config
 from .db import Database, get_db
 from .editing.checkpoints import CheckpointStore
 from .logging_setup import diagnostic_bundle_files, get_logger, ring, setup_logging
-from .paths import STATIC_DIR, ASSETS_DIR, memory_dir, subprocess_utf8_env, wotan_home
+from .paths import STATIC_DIR, ASSETS_DIR, add_recent_workspace, memory_dir, read_recent_workspaces, subprocess_utf8_env, wotan_home
 from .security import scan_secrets
 from .terminal import TerminalManager
 from .util import new_id, truncate, utc_iso
@@ -78,7 +82,82 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
     # ------------------------------------------------------------------ health
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
-        return {"ok": True, "app": "Wotan", "version": __version__, "workspace": str(ws), "time": utc_iso()}
+        cfg: AppConfig = app.state.config
+        return {
+            "ok": True, "app": "Wotan", "version": __version__, "workspace": str(ws), "time": utc_iso(),
+            "default_permission_mode": cfg.permissions.default_mode,
+        }
+
+    @app.post("/api/workspace")
+    async def switch_workspace(request: Request) -> dict[str, Any]:
+        """Open a different folder without restarting the server."""
+        nonlocal ws
+        body = await request.json()
+        raw = str(body.get("path", "")).strip()
+        if not raw:
+            return {"ok": False, "error": "path is required"}
+        new_ws = Path(raw).expanduser()
+        if not new_ws.is_absolute():
+            return {"ok": False, "error": "provide an absolute path"}
+        if not new_ws.exists():
+            return {"ok": False, "error": f"path does not exist: {new_ws}"}
+        if not new_ws.is_dir():
+            return {"ok": False, "error": f"not a directory: {new_ws}"}
+        new_ws = new_ws.resolve()
+
+        running = app.state.agent
+        if running is not None and running.state.status not in AGENT_TERMINAL_STATUSES:
+            return {"ok": False, "error": "the agent is still running - stop it before switching folders"}
+
+        ws = new_ws
+        app.state.workspace = new_ws
+        app.state.config = load_config(workspace=new_ws)
+        app.state.terminals = TerminalManager(new_ws)
+        app.state.agent = None  # next /ws/agent connection creates a fresh session bound to the new folder
+        add_recent_workspace(new_ws)
+        log.info("workspace switched", extra={"data": {"path": str(new_ws)}})
+        return {"ok": True, "workspace": str(new_ws)}
+
+    @app.get("/api/recent-workspaces")
+    async def recent_workspaces() -> dict[str, Any]:
+        return {"paths": [str(p) for p in read_recent_workspaces() if p != app.state.workspace]}
+
+    @app.get("/api/browse-dirs")
+    async def browse_dirs(path: str = "") -> dict[str, Any]:
+        """List subdirectories of an arbitrary filesystem path, for the 'Open folder'
+        picker. Deliberately NOT scoped to the current workspace (_safe_path) - its
+        whole job is to let the user navigate anywhere on disk to pick a new one."""
+        raw = path.strip()
+        if not raw:
+            if sys.platform.startswith("win"):
+                import string
+
+                drives = [f"{d}:\\" for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
+                return {"path": "", "parent": None, "dirs": [{"name": d, "path": d} for d in drives]}
+            return {"path": "", "parent": None, "dirs": [{"name": "/", "path": "/"}]}
+
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            return {"error": "provide an absolute path"}
+        if not p.exists() or not p.is_dir():
+            return {"error": f"not a directory: {p}"}
+        p = p.resolve()
+
+        entries = []
+        try:
+            for child in sorted(p.iterdir(), key=lambda c: c.name.lower()):
+                try:
+                    if child.is_dir():
+                        entries.append({"name": child.name, "path": str(child)})
+                except OSError:
+                    continue  # broken symlink, permission denied on stat, etc.
+        except PermissionError:
+            return {"error": f"permission denied: {p}"}
+
+        parent = str(p.parent) if p.parent != p else None
+        # On Windows, going up from a drive root (C:\) should surface the drive list.
+        is_drive_root = sys.platform.startswith("win") and len(str(p)) <= 3
+        return {"path": str(p), "parent": "" if is_drive_root else parent, "dirs": entries}
 
     # --------------------------------------------------------------- frontend
     @app.get("/api/models")
@@ -463,7 +542,7 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
         return {"ok": True}
 
     @app.get("/api/skills")
-    async def skills() -> dict[str, Any]:
+    async def skills(request: Request) -> dict[str, Any]:
         from .agent.skills import SkillRegistry
 
         reg = SkillRegistry(_workspace(request))
@@ -633,15 +712,27 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
                 with contextlib.suppress(Exception):
                     await ws.send_text(json.dumps(event, ensure_ascii=False, default=str))
 
-        agent: AgentSession = AgentSession(
-            config=app.state.config,
-            workspace=app.state.workspace,
-            db=db,
-            emit=emit,
-            registry=app.state.agent.registry if app.state.agent else None,
-        )
-        app.state.agent = agent
-        await emit({"type": "ready", "session_id": agent.session_id, "version": __version__})
+        existing: AgentSession | None = app.state.agent
+        if existing is not None and existing.state.status not in AGENT_TERMINAL_STATUSES:
+            # A run is still going from a connection that dropped (network hiccup,
+            # laptop woke back up, tab reloaded) - reattach to it instead of
+            # starting a fresh session and losing the in-progress turn.
+            agent = existing
+            agent.emit = emit
+            await emit({
+                "type": "ready", "session_id": agent.session_id, "version": __version__,
+                "resumed": True, "status": agent.state.status,
+            })
+        else:
+            agent = AgentSession(
+                config=app.state.config,
+                workspace=app.state.workspace,
+                db=db,
+                emit=emit,
+                registry=app.state.agent.registry if app.state.agent else None,
+            )
+            app.state.agent = agent
+            await emit({"type": "ready", "session_id": agent.session_id, "version": __version__})
 
         async def heartbeat() -> None:
             while True:
@@ -654,11 +745,24 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
                 msg = await ws.receive_text()
                 m = json.loads(msg)
                 if m.get("type") == "run":
+                    attachments: list[Attachment] = []
+                    for a in m.get("attachments") or []:
+                        data_b64 = str(a.get("data_b64", ""))
+                        if len(data_b64) > MAX_ATTACHMENT_B64_CHARS:
+                            await emit({"type": "error", "message": f"attachment {a.get('name', '')!r} too large - skipped (max ~6MB)"})
+                            continue
+                        attachments.append(Attachment(
+                            kind=str(a.get("kind", "image")),
+                            mime=str(a.get("mime", "image/png")),
+                            data_b64=data_b64,
+                            name=str(a.get("name", "")),
+                        ))
                     asyncio.create_task(agent.run_turn(
                         m.get("text", ""),
                         model_ref=m.get("model", ""),
                         agent_mode=m.get("mode"),
                         permission_mode=m.get("permission_mode"),
+                        attachments=attachments,
                     ))
                 elif m.get("type") in ("reply", "approval_reply"):
                     await agent.resolve_prompt_reply(str(m.get("id", "")), str(m.get("value", "")))
@@ -669,7 +773,11 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
                                 "usage": {"input_tokens": agent.state.input_tokens,
                                           "output_tokens": agent.state.output_tokens, "steps": agent.state.steps}})
         except WebSocketDisconnect:
-            await agent.stop()
+            # Keep the agent (and any in-progress turn) alive - a reconnect
+            # within a reasonable window reattaches above instead of losing
+            # the run. Only an explicit 'stop' message or a completed turn
+            # actually ends it.
+            pass
         finally:
             hb.cancel()
 

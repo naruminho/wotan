@@ -49,6 +49,7 @@ export default function CommandPalette() {
     const s = useStore.getState();
     return [
       { id: "file.open", title: "File: Quick open", detail: "Ctrl+P", run: () => s.openPalette("files") },
+      { id: "file.openFolder", title: "File: Open folder...", run: () => s.openFolderPicker() },
       { id: "file.save", title: "File: Save", detail: "Ctrl+S", run: () => void s.saveTab(s.activeTabId || "") },
       { id: "view.theme", title: "View: Toggle theme", run: () => s.toggleTheme() },
       { id: "view.sidebar", title: "View: Toggle sidebar", detail: "Ctrl+B", run: () => s.toggleSidebar() },

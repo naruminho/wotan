@@ -61,10 +61,10 @@ def parse_skill_md(text: str, path: Path) -> Skill | None:
     )
     sdir = path.parent / "scripts"
     if sdir.is_dir():
-        skill.scripts = [str(p.relative_to(path.parent)) for p in sorted(sdir.rglob("*")) if p.is_file()]
+        skill.scripts = [p.relative_to(path.parent).as_posix() for p in sorted(sdir.rglob("*")) if p.is_file()]
     rdir = path.parent / "references"
     if rdir.is_dir():
-        skill.references = [str(p.relative_to(path.parent)) for p in sorted(rdir.rglob("*")) if p.is_file()]
+        skill.references = [p.relative_to(path.parent).as_posix() for p in sorted(rdir.rglob("*")) if p.is_file()]
     return skill
 
 

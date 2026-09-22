@@ -76,6 +76,56 @@ def state_dir() -> Path:
     return wotan_home() / "state"
 
 
+MAX_RECENT_WORKSPACES = 10
+
+
+def recent_workspaces_file() -> Path:
+    return wotan_home() / "recent_workspaces.json"
+
+
+def read_recent_workspaces() -> list[Path]:
+    """Most-recently-opened folders (bare `wotan`, or 'Open folder' in the UI),
+    most recent first. Entries that no longer exist on disk are dropped silently."""
+    import json
+
+    f = recent_workspaces_file()
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[Path] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        p = Path(entry)
+        if p.is_dir():
+            out.append(p)
+    return out
+
+
+def read_last_workspace() -> Path | None:
+    recent = read_recent_workspaces()
+    return recent[0] if recent else None
+
+
+def add_recent_workspace(path: Path) -> None:
+    """Push `path` to the front of the recent-folders list (deduplicated, capped)."""
+    import json
+
+    resolved = str(Path(path).resolve())
+    existing = [str(p) for p in read_recent_workspaces()]
+    updated = [resolved] + [p for p in existing if p != resolved]
+    updated = updated[:MAX_RECENT_WORKSPACES]
+    f = recent_workspaces_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(updated), encoding="utf-8")
+    except OSError:
+        pass  # best-effort - never let this break opening/switching a folder
+
+
 def ensure_layout() -> None:
     """Create the user-level directory layout (idempotent)."""
     for d in (wotan_home(), memory_dir(), wotan_home() / "skills", logs_dir(), state_dir()):

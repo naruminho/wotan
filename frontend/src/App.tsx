@@ -8,6 +8,7 @@ import ChatPanel from "./components/ChatPanel";
 import CommandPalette from "./components/CommandPalette";
 import StatusBar from "./components/StatusBar";
 import Onboarding from "./components/Onboarding";
+import FolderPicker from "./components/FolderPicker";
 
 export default function App() {
   const init = useStore((s) => s.init);
@@ -17,7 +18,7 @@ export default function App() {
   const openPalette = useStore((s) => s.openPalette);
   const toast = useStore((s) => s.toast);
   const [sidebarWidth, setSidebarWidth] = useState(240);
-  const [chatWidth, setSidebarChatWidth] = useState(380);
+  const [chatWidth, setSidebarChatWidth] = useState(560);
   const [bottomHeight, setBottomHeight] = useState(220);
 
   useEffect(() => {
@@ -131,6 +132,7 @@ export default function App() {
       <StatusBar />
       <CommandPalette />
       <Onboarding />
+      <FolderPicker />
       {toast && (
         <div className="modal-overlay" style={{ pointerEvents: "none", background: "transparent", placeItems: "end center" }}>
           <div className="modal" style={{ width: "auto", maxWidth: 520, margin: 16 }}>{toast}</div>
@@ -144,12 +146,19 @@ function TitleBar() {
   const toggleTheme = useStore((s) => s.toggleTheme);
   const openSettings = useStore((s) => s.openSettings);
   const openPalette = useStore((s) => s.openPalette);
+  const openFolderPicker = useStore((s) => s.openFolderPicker);
   const workspace = useStore((s) => s.workspace);
   return (
     <div className="titlebar">
       <img className="logo" src="./logo.svg" alt="" />
       <span className="title">Wotan</span>
-      <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{workspace}</span>
+      <button
+        onClick={openFolderPicker}
+        title="Open a different folder"
+        style={{ color: "var(--text-dim)", fontSize: 11, padding: "2px 6px" }}
+      >
+        {workspace}
+      </button>
       <div className="menus">
         <button onClick={() => openPalette("commands")} title="Command palette (Ctrl+Shift+P)">Commands</button>
         <button onClick={() => openPalette("files")} title="Quick open (Ctrl+P)">Open</button>

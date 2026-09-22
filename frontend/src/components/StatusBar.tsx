@@ -5,7 +5,9 @@ export default function StatusBar() {
   const st = useStore((s) => s.agentStatus);
   const branch = useStore((s) => s.gitBranch);
   const tab = useStore((s) => s.activeTab());
-  const model = useStore((s) => s.modelSelected) || useStore((s) => s.modelDefault);
+  const modelSelected = useStore((s) => s.modelSelected);
+  const modelDefault = useStore((s) => s.modelDefault);
+  const model = modelSelected || modelDefault;
   const openSettings = useStore((s) => s.openSettings);
   const setSidebarView = useStore((s) => s.setSidebarView);
   const sessionId = useStore((s) => s.activeSessionId);

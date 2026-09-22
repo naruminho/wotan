@@ -3,6 +3,7 @@ provider reproduces a known contract - see config.example.yaml)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -128,42 +129,63 @@ class OpenAICompatProvider(LLMProvider):
         url = f"{self.base_url}/chat/completions"
         self.last_request_debug = {"url": url, "body": body}
         client = await self._get_client()
-        headers = await self._request_headers()
 
-        try:
-            if want_stream:
-                async with client.stream("POST", url, json=body, headers=headers) as resp:
-                    if resp.status_code == 401:
-                        self.tokens._info = None
-                        await self.tokens.refresh("force")
-                        headers = await self._request_headers()
-                    if resp.status_code == 429:
-                        raise LLMRateLimitError("rate limited by OpenAI-compatible endpoint")
-                    if resp.status_code >= 400:
-                        text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
-                        raise LLMError(f"HTTP {resp.status_code}", status=resp.status_code, why=text,
-                                       how_to_fix="check base_url, api_key and model id in the provider settings")
-                    return await self._consume(resp, on_event)
-            resp = await client.post(url, json=body, headers=headers)
-            if resp.status_code == 401:
-                self.tokens._info = None
-                await self.tokens.refresh("force")
-                headers = await self._request_headers()
+        max_retries = int(self.cfg.raw.get("max_retries", 3))
+        backoff_base = float(self.cfg.raw.get("backoff_base_seconds", 1.0))
+        last_exc: Exception | None = None
+        for attempt_i in range(max(1, max_retries)):
+            headers = await self._request_headers()
+            try:
+                if want_stream:
+                    async with client.stream("POST", url, json=body, headers=headers) as resp:
+                        if resp.status_code == 401 and attempt_i == 0:
+                            self.tokens._info = None
+                            await self.tokens.refresh("force")
+                            continue  # retry immediately with a fresh token, doesn't count against backoff
+                        if resp.status_code == 429:
+                            retry_after = float(resp.headers.get("Retry-After", backoff_base * (2**attempt_i)))
+                            await resp.aclose()
+                            last_exc = LLMRateLimitError(f"rate limited by OpenAI-compatible endpoint (attempt {attempt_i + 1})")
+                            await asyncio.sleep(min(retry_after, 30.0))
+                            continue
+                        if resp.status_code in (502, 503, 504):
+                            await resp.aclose()
+                            last_exc = LLMError(f"OpenAI-compatible endpoint transient error HTTP {resp.status_code}", retryable=True)
+                            await asyncio.sleep(backoff_base * (2**attempt_i))
+                            continue
+                        if resp.status_code >= 400:
+                            text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
+                            raise LLMError(f"HTTP {resp.status_code}", status=resp.status_code, why=text,
+                                           how_to_fix="check base_url, api_key and model id in the provider settings")
+                        return await self._consume(resp, on_event)
                 resp = await client.post(url, json=body, headers=headers)
-            if resp.status_code == 429:
-                raise LLMRateLimitError("rate limited by OpenAI-compatible endpoint")
-            if resp.status_code >= 400:
-                raise LLMError(
-                    f"HTTP {resp.status_code}",
-                    status=resp.status_code,
-                    why=resp.text[:500],
-                    how_to_fix="check base_url, api_key and model id in the provider settings",
-                )
-            raw = resp.json()
-            self.last_response_debug = raw
-            return self._parse(raw)
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(f"OpenAI-compatible request timed out: {exc}") from exc
+                if resp.status_code == 401 and attempt_i == 0:
+                    self.tokens._info = None
+                    await self.tokens.refresh("force")
+                    continue
+                if resp.status_code == 429:
+                    retry_after = float(resp.headers.get("Retry-After", backoff_base * (2**attempt_i)))
+                    last_exc = LLMRateLimitError(f"rate limited by OpenAI-compatible endpoint (attempt {attempt_i + 1})")
+                    await asyncio.sleep(min(retry_after, 30.0))
+                    continue
+                if resp.status_code in (502, 503, 504):
+                    last_exc = LLMError(f"OpenAI-compatible endpoint transient error HTTP {resp.status_code}", retryable=True)
+                    await asyncio.sleep(backoff_base * (2**attempt_i))
+                    continue
+                if resp.status_code >= 400:
+                    raise LLMError(
+                        f"HTTP {resp.status_code}",
+                        status=resp.status_code,
+                        why=resp.text[:500],
+                        how_to_fix="check base_url, api_key and model id in the provider settings",
+                    )
+                raw = resp.json()
+                self.last_response_debug = raw
+                return self._parse(raw)
+            except httpx.TimeoutException as exc:
+                last_exc = LLMTimeoutError(f"OpenAI-compatible request timed out: {exc}")
+                log.warning("openai-compatible request timeout", extra={"data": {"url": url, "attempt": attempt_i}})
+        raise last_exc or LLMError("request failed")
 
     def _parse(self, raw: dict[str, Any]) -> ChatResult:
         choice = (raw.get("choices") or [{}])[0]

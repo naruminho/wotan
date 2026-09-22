@@ -1,0 +1,5 @@
+# Prebuilt frontend bundle: generated output committed for npm-restricted
+# installs (see README "Prebuilt frontend"). Treat as binary so Windows'
+# core.autocrlf doesn't rewrite every file's line endings on checkout and
+# make git status show the whole tree as "modified" with no real diff.
+wotan/static/** -text

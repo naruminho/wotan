@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,7 +25,7 @@ from ..editing.checkpoints import CheckpointStore
 from ..editing.engine import EditEngine
 from ..logging_setup import get_logger, set_correlation
 from ..paths import subprocess_utf8_env
-from ..providers.base import ChatResult, Message, ToolSpec
+from ..providers.base import Attachment, ChatResult, Message, ToolSpec
 from ..providers.errors import LLMError
 from ..providers.registry import ProviderRegistry
 from ..providers.text_tools import extract_reply_text, parse_tool_calls, validate_arguments
@@ -260,7 +261,7 @@ class AgentSession:
             return rec
         if kind in ("bash", "shell") and cwd in (".", "", str(self.workspace)):
             if self._shell is None:
-                self._shell = PersistentShell(self.workspace, windows=False)
+                self._shell = PersistentShell(self.workspace, windows=sys.platform.startswith("win"))
             result = await self._shell.run(command, timeout=timeout)
         else:
             target_dir = self.workspace / cwd if cwd and cwd != "." else self.workspace
@@ -380,9 +381,10 @@ class AgentSession:
         with contextlib.suppress(Exception):
             await self.emit(event)
 
-    def _messages_for_history(self, content: str, role: str = "user") -> None:
-        self.history.append(Message(role=role, content=content))
-        self.db.add_message(self.session_id, role, content)
+    def _messages_for_history(self, content: str, role: str = "user", attachments: list[Attachment] | None = None) -> None:
+        self.history.append(Message(role=role, content=content, attachments=attachments or []))
+        meta = {"attachments": [{"kind": a.kind, "mime": a.mime, "name": a.name} for a in attachments]} if attachments else None
+        self.db.add_message(self.session_id, role, content, meta=meta)
 
     # -- external content wrapping (injection defense) ------------------------
     @staticmethod
@@ -396,6 +398,7 @@ class AgentSession:
         model_ref: str = "",
         agent_mode: str | None = None,
         permission_mode: str | None = None,
+        attachments: list[Attachment] | None = None,
     ) -> dict[str, Any]:
         set_correlation(new_id("cid-"))
         self.state.interrupted = False
@@ -416,7 +419,7 @@ class AgentSession:
             await self._emit({"type": "error", "message": hook_res.message})
             return {"status": "blocked", "message": hook_res.message}
 
-        self._messages_for_history(user_text, "user")
+        self._messages_for_history(user_text, "user", attachments)
         self.gate.start_task(new_id("task-"))
         self.gate.set_criteria([])
         self.doom.reset()

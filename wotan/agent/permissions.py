@@ -14,13 +14,16 @@ import re
 from dataclasses import dataclass, field
 
 from ..config import PermissionsConfig
+from ..logging_setup import get_logger
+
+log = get_logger("wotan.agent.permissions", component="agent")
 
 MODES = ("ask", "edits", "autonomous")
 
 _DESTRUCTIVE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("recursive_delete", re.compile(r"\b(rm\s+|del\s+/|rmdir\s+/|rmdir\s+|shutil\.rmtree)", re.IGNORECASE)),
     ("format_disk", re.compile(r"\b(format\s+[a-z]:|mkfs\b)", re.IGNORECASE)),
-    ("git_history_rewrite", re.compile(r"\bgit\s+(push\s+.*--force|reset\s+--hard|clean\s+-[a-z]*f)\b", re.IGNORECASE)),
+    ("git_history_rewrite", re.compile(r"\bgit\s+(push\s+.*--force|reset\s+--hard|clean\s+(-\w*f\w*|--force))", re.IGNORECASE)),
     ("git_push", re.compile(r"\bgit\s+push\b", re.IGNORECASE)),
     ("package_install", re.compile(r"\b(pip3?\s+install|python\s+-m\s+pip\s+install|npm\s+install|yarn\s+add|pnpm\s+add)\b", re.IGNORECASE)),
     ("registry_publish", re.compile(r"\b(npm\s+publish|twine\s+upload)\b", re.IGNORECASE)),
@@ -72,11 +75,16 @@ class PermissionPolicy:
         for kind, pat in _DESTRUCTIVE_PATTERNS:
             if pat.search(command):
                 if allow:
+                    log.warning(
+                        "auto-approved destructive command (allow-listed)",
+                        extra={"data": {"kind": kind, "command": command, "rule": allow}},
+                    )
                     return PermissionDecision(True, False, f"destructive but allow-listed ({kind})", f"destructive:{kind}")
                 return PermissionDecision(True, True, f"destructive action ({kind}) requires approval", f"destructive:{kind}")
         if _NETWORK_SEND.search(command) and self.tainted:
             return PermissionDecision(True, True, "session is tainted by external content: external network send needs approval (Rule of Two)", "rule_of_two")
         if _NETWORK_SEND.search(command) and self.mode == "autonomous" and not self.tainted:
+            log.warning("auto-approved network command (autonomous mode)", extra={"data": {"command": command}})
             return PermissionDecision(True, False, "network command in autonomous mode", "autonomous")
         if allow:
             return PermissionDecision(True, False, "allow-listed", "allow_list")

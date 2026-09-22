@@ -8,6 +8,7 @@ for Python/JS/TS/Go/Rust/Java. The map is recomputed when files change.
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,7 @@ _EXTS = {".py": [PY_DEF], ".js": [JS_DEF, JS_FN], ".jsx": [JS_DEF, JS_FN], ".ts"
          ".tsx": [JS_DEF, JS_FN], ".mjs": [JS_DEF, JS_FN], ".go": [GO_DEF], ".rs": [RS_DEF], ".java": [JAVA_DEF]}
 
 _IGNORE = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".tox", ".mypy_cache", ".pytest_cache"}
+_IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
 @dataclass
@@ -41,10 +43,18 @@ class RepoMap:
     refs: dict[str, set[str]] = field(default_factory=dict)  # symbol -> files referencing it
     _cache_valid: bool = False
 
+    def _scan_files(self) -> list[Path]:
+        paths: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = [d for d in dirnames if d not in _IGNORE]
+            for name in filenames:
+                paths.append(Path(dirpath) / name)
+        return paths
+
     def refresh(self, files: Iterable[Path] | None = None) -> None:
         self.symbols = []
         self.refs = {}
-        paths = list(files) if files is not None else [p for p in self.root.rglob("*") if p.is_file()]
+        paths = list(files) if files is not None else self._scan_files()
         texts: dict[str, str] = {}
         for p in paths:
             if any(part in _IGNORE for part in p.parts):
@@ -65,8 +75,8 @@ class RepoMap:
                     self.symbols.append(Symbol(name=m.group(1), file=rel, line=line))
         names = {s.name for s in self.symbols}
         for rel, text in texts.items():
-            for name in names:
-                if re.search(rf"\b{re.escape(name)}\b", text):
+            for name in _IDENT.findall(text):
+                if name in names:
                     self.refs.setdefault(name, set()).add(rel)
         self._cache_valid = True
 

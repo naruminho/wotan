@@ -28,6 +28,15 @@ export default function LogPanel() {
         <input placeholder="filter (search in messages)" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Log filter" />
         <button title="Refresh" onClick={() => void loadLogs(level, q)}>↻</button>
         <button
+          title="Show destructive/network actions the agent auto-approved without asking (e.g. in autonomous mode or via always_allow) - useful to audit after an unattended run"
+          onClick={() => {
+            setLevel("WARNING");
+            setQ("auto-approved");
+          }}
+        >
+          auto-approved actions
+        </button>
+        <button
           title="Download a zip with logs, masked config and versions"
           onClick={() => {
             api.diagnostics();

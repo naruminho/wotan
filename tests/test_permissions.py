@@ -28,6 +28,47 @@ def test_destructive_always_needs_approval():
         assert d.reason
 
 
+def test_git_clean_combined_flags_needs_approval():
+    # Regression: the original pattern (clean\s+-[a-z]*f\b) required 'f' to be
+    # the last flag character, so 'git clean -fd' (the common form, combined
+    # with -d) slipped through as a plain non-destructive command.
+    p = PermissionPolicy(PermissionsConfig(), mode="autonomous")
+    for cmd in ("git clean -fd", "git clean -fdx", "git clean -xdf", "git clean --force"):
+        d = p.check_command(cmd)
+        assert d.needs_approval, cmd
+    # a dry run must NOT be flagged as destructive
+    assert not p.check_command("git clean -n").needs_approval
+
+
+def test_allow_list_safe_git_push_but_not_force():
+    # A user's always_allow entry meant to let plain 'git push' through in
+    # autonomous mode must never also allow-list a force-push or hard reset
+    # smuggled into the same command string.
+    safe_push = r"^(?![\s\S]*(?:--force|--force-with-lease|reset\s+--hard|clean\s+-\w*f))[\s\S]*\bgit\s+push\b"
+    cfg = PermissionsConfig(always_allow=[safe_push])
+    p = PermissionPolicy(cfg, mode="autonomous")
+    assert not p.check_command("git push origin main").needs_approval
+    assert not p.check_command("git push").needs_approval
+    for cmd in (
+        "git push --force origin main",
+        "git push --force-with-lease",
+        "git push origin main && git reset --hard HEAD~1",
+    ):
+        assert p.check_command(cmd).needs_approval, cmd
+
+
+def test_allow_listed_destructive_command_is_logged(caplog):
+    # An unattended run needs an audit trail of anything auto-approved that
+    # would normally require a human's ok.
+    import logging as _logging
+
+    safe_push = r"^(?![\s\S]*(?:--force|--force-with-lease|reset\s+--hard|clean\s+-\w*f))[\s\S]*\bgit\s+push\b"
+    p = PermissionPolicy(PermissionsConfig(always_allow=[safe_push]), mode="autonomous")
+    with caplog.at_level(_logging.WARNING, logger="wotan.agent.permissions"):
+        p.check_command("git push origin main")
+    assert any("auto-approved" in r.message for r in caplog.records)
+
+
 def test_no_verify_blocked():
     p = PermissionPolicy(PermissionsConfig(), mode="autonomous")
     d = p.check_command("git commit --no-verify -m x")

@@ -47,6 +47,19 @@ function MessageView({ item }: { item: ChatItem }) {
         {item.role === "user" ? "You" : "Wotan"}
         {item.streaming && <span className="badge" style={{ marginLeft: 8 }}>writing</span>}
       </div>
+      {item.attachments && item.attachments.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: item.text ? 6 : 0 }}>
+          {item.attachments.map((a) => (
+            <img
+              key={a.id}
+              src={a.dataUrl}
+              alt={a.name}
+              title={a.name}
+              style={{ maxWidth: 160, maxHeight: 120, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }}
+            />
+          ))}
+        </div>
+      )}
       {item.text && <Markdown text={item.text} />}
       {item.tools.map((tc) => (
         <ToolCard key={tc.id} call={tc} />
@@ -135,6 +148,8 @@ function AgentStatusBar() {
   );
 }
 
+const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024;
+
 export default function ChatPanel() {
   const chat = useStore((s) => s.chat);
   const sendPrompt = useStore((s) => s.sendPrompt);
@@ -147,6 +162,12 @@ export default function ChatPanel() {
   const newSession = useStore((s) => s.newSession);
   const setToast = useStore((s) => s.setToast);
   const connectAgent = useStore((s) => s.connectAgent);
+  const pendingAttachments = useStore((s) => s.pendingAttachments);
+  const addPendingAttachment = useStore((s) => s.addPendingAttachment);
+  const removePendingAttachment = useStore((s) => s.removePendingAttachment);
+  const models = useStore((s) => s.models);
+  const modelSelected = useStore((s) => s.modelSelected);
+  const modelDefault = useStore((s) => s.modelDefault);
   const [text, setText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -183,7 +204,15 @@ export default function ChatPanel() {
 
   const onSend = () => {
     const t = text.trim();
-    if (!t) return;
+    if (!t && pendingAttachments.length === 0) return;
+    if (pendingAttachments.length > 0) {
+      const ref = modelSelected || modelDefault;
+      const info = Object.values(models).flat().find((m) => m.ref === ref);
+      if (info && !info.multimodal) {
+        setToast(`${info.name} can't see images - pick a model marked "(vision)" or remove the attachment`);
+        return;
+      }
+    }
     sendPrompt(t);
     setText("");
     inputRef.current?.focus();
@@ -202,6 +231,34 @@ export default function ChatPanel() {
     setText((prev) => `${prev}@`);
     inputRef.current?.focus();
     setToast("Type @ followed by a file path to attach it to the context");
+  };
+
+  const attachImageFile = (file: File) => {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setToast(`${file.name || "image"} is too large (max 6MB)`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      addPendingAttachment({
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name || "screenshot.png",
+        mime: file.type || "image/png",
+        dataUrl: String(reader.result || ""),
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const images = items.filter((it) => it.kind === "file" && it.type.startsWith("image/"));
+    if (images.length === 0) return;
+    e.preventDefault();
+    for (const it of images) {
+      const file = it.getAsFile();
+      if (file) attachImageFile(file);
+    }
   };
 
   return (
@@ -233,10 +290,34 @@ export default function ChatPanel() {
       </div>
       <TodoList />
       <div className="composer">
+        {pendingAttachments.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "6px 6px 0" }}>
+            {pendingAttachments.map((a) => (
+              <div key={a.id} style={{ position: "relative" }}>
+                <img
+                  src={a.dataUrl}
+                  alt={a.name}
+                  title={a.name}
+                  style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }}
+                />
+                <button
+                  title="Remove"
+                  onClick={() => removePendingAttachment(a.id)}
+                  style={{
+                    position: "absolute", top: -6, right: -6, width: 18, height: 18, padding: 0,
+                    borderRadius: "50%", lineHeight: "16px", fontSize: 11,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           value={text}
-          placeholder="Message Wotan... (Enter to send, Shift+Enter for newline; @ to attach files)"
+          placeholder="Message Wotan... (Enter to send, Shift+Enter for newline; @ to attach files, Ctrl+V to paste a screenshot)"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -244,6 +325,7 @@ export default function ChatPanel() {
               onSend();
             }
           }}
+          onPaste={onPaste}
           aria-label="Message"
           onDragOver={(e) => e.preventDefault()}
           onDrop={onDrop}

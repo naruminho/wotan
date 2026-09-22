@@ -17,7 +17,7 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__
-from .paths import ensure_layout, utf8_console
+from .paths import add_recent_workspace, ensure_layout, read_last_workspace, utf8_console
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -26,8 +26,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .config import load_config
     from .server import create_app
 
-    workspace = Path(args.workspace or os.environ.get("WOTAN_WORKSPACE") or Path.cwd()).resolve()
+    if args.workspace or os.environ.get("WOTAN_WORKSPACE"):
+        workspace = Path(args.workspace or os.environ.get("WOTAN_WORKSPACE")).resolve()
+    else:
+        workspace = (read_last_workspace() or Path.cwd()).resolve()
     ensure_layout()
+    add_recent_workspace(workspace)
     cfg = load_config(workspace=workspace)
     host = args.host or cfg.server.host
     port = args.port or cfg.server.port
@@ -64,9 +68,11 @@ def _run_app_window(app: object, host: str, port: int, url: str, workspace: Path
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    from .doctor import doctor_all
+    from .doctor import main_sync
 
-    print(doctor_all(args.config, args.workspace))
+    config_path = Path(args.config).resolve() if args.config else None
+    workspace = Path(args.workspace or os.environ.get("WOTAN_WORKSPACE") or Path.cwd()).resolve()
+    print(main_sync(config_path, workspace))
     return 0
 
 

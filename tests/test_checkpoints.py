@@ -48,7 +48,7 @@ def test_list_and_diff(checkpoints: CheckpointStore, ws: Path):
 
 
 def test_edit_engine_creates_checkpoints(engine, ws: Path):
-    (ws / "cp.py").write_text("x = 1\n", encoding="utf-8")
+    (ws / "cp.py").write_text("x = 1\n", encoding="utf-8", newline="")
     engine.read("cp.py", session_id="s")
     out = engine.edit_file("cp.py", "x = 1", "x = 2", session_id="s")
     assert out.ok

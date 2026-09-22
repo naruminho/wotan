@@ -212,6 +212,7 @@ kbd {
 
 .chat-panel {
   display: flex; flex-direction: column;
+  flex: 1;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   min-height: 0;

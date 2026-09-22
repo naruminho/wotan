@@ -628,7 +628,11 @@ class EditEngine:
                 return EditOutcome(ok=False, error=stale)
             before_lines = before.count("\n") + 1
             if before_lines >= self.rewrite_threshold_lines and not (justification.strip() or force):
-                sim = difflib.SequenceMatcher(None, before, content).ratio()
+                # Compare with line endings normalized: an eol-only difference (e.g. a
+                # CRLF file rewritten with LF content) must not mask a small text edit.
+                sim = difflib.SequenceMatcher(
+                    None, before.replace("\r\n", "\n"), content.replace("\r\n", "\n")
+                ).ratio()
                 if sim > 0.3:  # a small change on a big file: refuse full rewrite
                     return EditOutcome(
                         ok=False,

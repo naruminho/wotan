@@ -29,6 +29,13 @@ export interface ToolCallCard {
   status: "running" | "done" | "error";
 }
 
+export interface PendingAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  dataUrl: string;
+}
+
 export interface ChatItem {
   id: string;
   role: "user" | "assistant" | "system";
@@ -37,6 +44,7 @@ export interface ChatItem {
   approvals: { id: string; action: string; detail: string; answered?: string }[];
   questions: { id: string; question: string; answered?: string }[];
   streaming: boolean;
+  attachments?: PendingAttachment[];
 }
 
 export interface TodoItem {
@@ -80,6 +88,10 @@ export interface Store {
   version: string;
   initialized: boolean;
   init: () => Promise<void>;
+  openFolder: (path: string) => Promise<string | undefined>;
+  folderPickerOpen: boolean;
+  openFolderPicker: () => void;
+  closeFolderPicker: () => void;
 
   sidebarView: SidebarView;
   setSidebarView: (v: SidebarView) => void;
@@ -138,6 +150,10 @@ export interface Store {
   socket: AgentSocket | null;
   connectAgent: () => void;
   sendPrompt: (text: string) => void;
+  pendingAttachments: PendingAttachment[];
+  addPendingAttachment: (a: PendingAttachment) => void;
+  removePendingAttachment: (id: string) => void;
+  clearPendingAttachments: () => void;
   stopAgent: () => void;
   replyTo: (id: string, value: string) => void;
   loadSessions: () => Promise<void>;
@@ -171,6 +187,7 @@ const defaultStatus: AgentStatusState = {
 
 const THEME_KEY = "wotan.theme";
 const MODEL_KEY = "wotan.model";
+const PERMISSION_KEY = "wotan.permissionMode";
 
 export const useStore = create<Store>((set, get) => ({
   theme: (localStorage.getItem(THEME_KEY) as "dark" | "light") || "dark",
@@ -190,6 +207,12 @@ export const useStore = create<Store>((set, get) => ({
     const health = await api.health();
     const models = await api.models();
     document.documentElement.dataset.theme = get().theme;
+    const validModes = ["ask", "edits", "autonomous"];
+    const storedMode = localStorage.getItem(PERMISSION_KEY);
+    const permissionMode =
+      (validModes.includes(storedMode || "") ? storedMode : null) ||
+      (validModes.includes(health.default_permission_mode || "") ? health.default_permission_mode : null) ||
+      "ask";
     set({
       workspace: health.workspace,
       version: health.version,
@@ -197,10 +220,23 @@ export const useStore = create<Store>((set, get) => ({
       models: models.groups,
       modelDefault: models.default,
       modelSelected: localStorage.getItem(MODEL_KEY) || models.default,
+      permissionMode: permissionMode as "ask" | "edits" | "autonomous",
     });
     await Promise.all([get().loadTree(), get().loadGit(), get().loadSessions()]);
     if (!localStorage.getItem("wotan.onboarded")) set({ onboarding: true });
   },
+  openFolder: async (path: string) => {
+    const res = await api.switchWorkspace(path);
+    if (!res.ok) return res.error || "failed to open folder";
+    // The workspace, config, terminals and agent session are all pinned to a
+    // single folder server-side - a full reload is the simplest way to get a
+    // clean state for the new one (file tree, open tabs, chat, WS session).
+    window.location.reload();
+    return undefined;
+  },
+  folderPickerOpen: false,
+  openFolderPicker: () => set({ folderPickerOpen: true }),
+  closeFolderPicker: () => set({ folderPickerOpen: false }),
 
   sidebarView: "explorer",
   setSidebarView: (v) => set((s) => ({ sidebarView: v, sidebarVisible: s.sidebarView !== v ? true : s.sidebarVisible })),
@@ -372,7 +408,10 @@ export const useStore = create<Store>((set, get) => ({
   agentMode: "Agent",
   setAgentMode: (m) => set({ agentMode: m }),
   permissionMode: "ask",
-  setPermissionMode: (m) => set({ permissionMode: m }),
+  setPermissionMode: (m) => {
+    localStorage.setItem(PERMISSION_KEY, m);
+    set({ permissionMode: m });
+  },
 
   chat: [],
   todos: [],
@@ -390,6 +429,13 @@ export const useStore = create<Store>((set, get) => ({
       switch (ev.type) {
         case "ready":
           set({ activeSessionId: ev.session_id });
+          if (ev.resumed) {
+            const terminal = ["idle", "done", "error", "stopped"].includes(ev.status || "");
+            set({
+              agentStatus: { ...s.agentStatus, running: !terminal, status: ev.status || s.agentStatus.status, stallWarning: "" },
+            });
+            s.setToast(terminal ? "Reconnected - the agent had finished while you were disconnected" : "Reconnected - the agent kept running in the background");
+          }
           break;
         case "status": {
           const st = { ...s.agentStatus };
@@ -531,9 +577,14 @@ export const useStore = create<Store>((set, get) => ({
   sendPrompt: (text: string) => {
     const s = get();
     if (!s.socket) s.connectAgent();
-    const chat = [...s.chat, { id: `u-${Date.now()}`, role: "user" as const, text, tools: [], approvals: [], questions: [], streaming: false }];
+    const attachments = s.pendingAttachments;
+    const chat = [
+      ...s.chat,
+      { id: `u-${Date.now()}`, role: "user" as const, text, tools: [], approvals: [], questions: [], streaming: false, attachments },
+    ];
     set({
       chat,
+      pendingAttachments: [],
       agentStatus: {
         ...s.agentStatus,
         running: true,
@@ -543,8 +594,18 @@ export const useStore = create<Store>((set, get) => ({
         stallWarning: "",
       },
     });
-    s.socket?.run(text, s.modelSelected || s.modelDefault, s.agentMode, s.permissionMode);
+    s.socket?.run(
+      text,
+      s.modelSelected || s.modelDefault,
+      s.agentMode,
+      s.permissionMode,
+      attachments.map((a) => ({ kind: "image", mime: a.mime, data_b64: a.dataUrl.split(",")[1] || "", name: a.name })),
+    );
   },
+  pendingAttachments: [],
+  addPendingAttachment: (a) => set((s) => ({ pendingAttachments: [...s.pendingAttachments, a] })),
+  removePendingAttachment: (id) => set((s) => ({ pendingAttachments: s.pendingAttachments.filter((a) => a.id !== id) })),
+  clearPendingAttachments: () => set({ pendingAttachments: [] }),
   stopAgent: () => {
     get().socket?.stop();
     set({ agentStatus: { ...get().agentStatus, running: false, status: "stopped" } });
@@ -586,3 +647,4 @@ export const useStore = create<Store>((set, get) => ({
     if (t) setTimeout(() => set({ toast: "" }), 4000);
   },
 }));
+

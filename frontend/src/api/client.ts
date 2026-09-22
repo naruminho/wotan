@@ -56,7 +56,14 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => req<{ ok: boolean; version: string; workspace: string }>("/api/health"),
+  health: () => req<{ ok: boolean; version: string; workspace: string; default_permission_mode?: string }>("/api/health"),
+  switchWorkspace: (path: string) =>
+    req<{ ok: boolean; workspace?: string; error?: string }>("/api/workspace", { method: "POST", body: JSON.stringify({ path }) }),
+  browseDirs: (path = "") =>
+    req<{ path: string; parent: string | null; dirs: { name: string; path: string }[]; error?: string }>(
+      `/api/browse-dirs?path=${encodeURIComponent(path)}`,
+    ),
+  recentWorkspaces: () => req<{ paths: string[] }>("/api/recent-workspaces"),
   tree: (path = "") => req<{ path: string; entries: TreeEntry[] }>(`/api/fs/tree?path=${encodeURIComponent(path)}`),
   readFile: (path: string) => req<ApiFile>(`/api/fs/file?path=${encodeURIComponent(path)}`),
   saveFile: (path: string, content: string, expectedHash?: string) =>
@@ -116,10 +123,13 @@ export type AgentEvent = {
   [key: string]: any;
 };
 
-/** Agent WebSocket with heartbeat + stall detection support. */
+/** Agent WebSocket with heartbeat + stall detection + auto-reconnect support. */
 export class AgentSocket {
   private ws: WebSocket | null = null;
   private queue: any[] = [];
+  private reconnectAttempts = 0;
+  private reconnectTimer: number | null = null;
+  private closedByUser = false;
   onEvent: ((ev: AgentEvent) => void) | null = null;
   onOpen: (() => void) | null = null;
   onClose: (() => void) | null = null;
@@ -127,10 +137,12 @@ export class AgentSocket {
   sessionId = "";
 
   connect(): void {
+    this.closedByUser = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.ws = new WebSocket(`${proto}://${location.host}/ws/agent`);
     this.ws.onopen = () => {
       this.lastEventAt = Date.now();
+      this.reconnectAttempts = 0;
       this.onOpen?.();
       for (const m of this.queue.splice(0)) this.ws?.send(JSON.stringify(m));
     };
@@ -146,7 +158,23 @@ export class AgentSocket {
     };
     this.ws.onclose = () => {
       this.onClose?.();
+      if (this.closedByUser) return;
+      // Exponential backoff (1s, 2s, 4s ... capped at 15s) - covers a brief
+      // wifi drop or the laptop waking back up without hammering the server.
+      const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 15000);
+      this.reconnectAttempts += 1;
+      this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
     };
+  }
+
+  /** Explicit disconnect (e.g. navigating away) - do not auto-reconnect. */
+  disconnect(): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws?.close();
   }
 
   send(msg: any): void {
@@ -155,8 +183,14 @@ export class AgentSocket {
     else this.queue.push(msg);
   }
 
-  run(text: string, model: string, mode: string, permissionMode: string): void {
-    this.send({ type: "run", text, model, mode, permission_mode: permissionMode });
+  run(
+    text: string,
+    model: string,
+    mode: string,
+    permissionMode: string,
+    attachments?: { kind: string; mime: string; data_b64: string; name: string }[],
+  ): void {
+    this.send({ type: "run", text, model, mode, permission_mode: permissionMode, attachments: attachments || [] });
   }
 
   reply(id: string, value: string): void {
