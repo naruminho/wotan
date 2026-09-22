@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wotan"
+version = "0.1.0"
+description = "Wotan - a local web IDE (VS Code-style) with a built-in coding agent and personal-assistant mode."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Wotan contributors" }]
+keywords = ["ide", "coding-agent", "llm", "assistant", "developer-tools"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Integrated Development Environments (IDE)",
+]
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "websockets>=12",
+  "jinja2>=3.1",
+  "PyYAML>=6.0",
+  "httpx>=0.27",
+  "pydantic>=2.6",
+  "python-multipart>=0.0.9",
+  "jsonpath-ng>=1.6",
+  "jmespath>=1.0",
+]
+
+[project.optional-dependencies]
+pty = ["pywinpty>=2.0; sys_platform == 'win32'"]
+keyring = ["keyring>=25"]
+pdf = ["pypdf>=4.0"]
+app = ["pywebview>=5.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pypdf>=4.0"]
+all = [
+  "pywinpty>=2.0; sys_platform == 'win32'",
+  "keyring>=25",
+  "pypdf>=4.0",
+  "pywebview>=5.0",
+]
+
+[project.scripts]
+wotan = "wotan.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/naruminho/wotan"
+
+[tool.setuptools.packages.find]
+include = ["wotan*"]
+
+[tool.setuptools.package-data]
+wotan = ["static/**/*", "assets/**/*", "templates/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

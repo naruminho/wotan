@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Experiment</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-top: 16px; }
+    button { padding: 8px 18px; }
+    pre { white-space: pre-wrap; background: #f6f8fa; padding: 12px; border-radius: 6px; }
+    .err { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Experiment</h1>
+  <p>Upload a file, ask the configured gateway, see the result.</p>
+  <div class="card">
+    <input id="prompt" placeholder="Prompt (e.g. Summarize this document)" style="width:100%;margin-bottom:8px" />
+    <input id="file" type="file" />
+    <p><button id="go">Analyze</button></p>
+  </div>
+  <div class="card" id="result" hidden>
+    <h3>Result</h3>
+    <pre id="out"></pre>
+  </div>
+  <script>
+    document.getElementById("go").onclick = async () => {
+      const f = document.getElementById("file").files[0];
+      if (!f) { alert("Choose a file first"); return; }
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("prompt", document.getElementById("prompt").value);
+      const res = await fetch("/api/analyze", { method: "POST", body: fd });
+      const body = await res.json();
+      const box = document.getElementById("result");
+      box.hidden = false;
+      const out = document.getElementById("out");
+      out.className = body.ok ? "" : "err";
+      out.textContent = body.ok ? body.answer : "ERROR: " + body.error;
+    };
+  </script>
+</body>
+</html>

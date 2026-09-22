@@ -1,0 +1,265 @@
+# Wotan configuration example.
+#
+# Copy to %USERPROFILE%\.wotan\config.yaml (or ~/.wotan/config.yaml) and edit.
+# YAML is the source of truth: the Settings screen reads and writes this file.
+# Secrets are NEVER stored here - reference them as env:VAR or keyring:SERVICE:USER.
+# Strings support ${VAR} and ${VAR:-default} interpolation.
+
+version: 1
+
+server:
+  host: 127.0.0.1
+  port: 8765
+  open_browser: true
+
+editor:
+  # Refuse full rewrites of existing files larger than this (use edit_file).
+  rewrite_threshold_lines: 40
+  new_file_encoding: utf-8
+  new_file_eol: lf            # lf | crlf
+  # Emojis / decorative Unicode in code, logs and commits break Windows
+  # terminals (cp1252/cp850) - they are replaced or rejected by default.
+  emoji_policy_enabled: true
+  emoji_allow: []
+  syntax_check: true
+  # Hashline edits (line:hash anchors) for models flagged as weak.
+  hashline_for_weak_models: true
+
+permissions:
+  default_mode: ask           # ask | edits | autonomous
+  always_allow: []
+  always_deny: []
+  # Destructive commands always require approval; these files are protected
+  # from agent edits entirely ("fix the code, not the config").
+  protected_files:
+    - pyproject.toml
+    - setup.cfg
+    - setup.py
+    - tox.ini
+    - pytest.ini
+    - .pre-commit-config.yaml
+    - tsconfig.json
+    - package.json
+    - .eslintrc
+    - .eslintrc.js
+    - .eslintrc.json
+    - biome.json
+    - oxlint.json
+
+verification:
+  enabled: true
+  # Run automatically before finish_task is accepted (merged with AGENTS.md ## Verify).
+  commands:
+    - python -m pytest -q
+  on_stop_hook: true
+  dirty_tracking: true
+  require_evidence: true
+
+limits:
+  max_steps: 60
+  max_tokens_per_task: 400000
+  llm_timeout_seconds: 180
+  tool_timeout_seconds: 120
+  stall_warning_seconds: 60
+
+search:
+  # Web search is pluggable and can be turned off entirely.
+  enabled: true
+  provider: searxng           # searxng | brave | tavily | http
+  base_url: ${SEARCH_BASE_URL:-}
+  endpoint: /search
+  method: GET
+  api_key: ${SEARCH_API_KEY:-}
+  results_path: results
+  title_path: title
+  url_path: url
+  snippet_path: content
+  query_param: q
+
+web:
+  enabled: true
+  allow_domains: []           # empty = any domain (taint rules still apply)
+
+logging:
+  level: INFO
+  debug_llm: false            # raw LLM request/response in the trace (masked)
+
+# ---------------------------------------------------------------------------
+# Providers and models. Three ready-made presets:
+#   1. openai_demo    - OpenAI-compatible contract (also proves the generic
+#                       provider below can reproduce a known contract)
+#   2. anthropic_demo - Anthropic Messages contract
+#   3. fictional_gateway - a made-up contract with different field names that
+#                       matches wotan.mock_gateway (run 'wotan mock' and use
+#                       this preset to develop/test without the real gateway)
+# ---------------------------------------------------------------------------
+providers:
+  - id: openai_demo
+    type: openai_compatible
+    name: OpenAI-compatible gateway
+    base_url: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    api_key: env:OPENAI_API_KEY
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o mini
+        context_window: 128000
+        tools: true
+        streaming: true
+        weak: false
+        multimodal: true
+        edit_format: str_replace     # str_replace | apply_patch | hashline
+
+  - id: anthropic_demo
+    type: anthropic
+    name: Anthropic-compatible gateway
+    base_url: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+    api_key: env:ANTHROPIC_API_KEY
+    models:
+      - id: claude-sonnet-4-5
+        name: Claude Sonnet
+        context_window: 200000
+        tools: true
+        streaming: true
+        weak: false
+        edit_format: str_replace
+
+  # Fully declarative contract - edit YAML only, no code changes needed.
+  - id: fictional_gateway
+    type: generic_http
+    name: Corporate LLM gateway (fictional example contract)
+    base_url: ${GATEWAY_URL:-http://127.0.0.1:8787}
+    auth:
+      type: oauth_like_token        # none | api_key | oauth_like_token
+      token_url: ${GATEWAY_TOKEN_URL:-http://127.0.0.1:8787/mock/identity/token}
+      method: POST
+      body_content_type: application/x-www-form-urlencoded
+      body_template: |
+        grant_type=client_credentials&client_id={{ client_id }}&client_secret={{ client_secret }}
+      token_path: tok
+      expires_path: valid_for_sec
+      expires_kind: seconds         # seconds | epoch | jwt | ttl
+      fixed_ttl_seconds: 1800
+      refresh_margin_seconds: 300
+      credentials:
+        client_id: env:GATEWAY_CLIENT_ID
+        client_secret: env:GATEWAY_CLIENT_SECRET
+      header_name: Authorization
+      header_prefix: "Bearer "
+    chat:
+      url: /mock/api/generate
+      method: POST
+      headers:
+        Content-Type: application/json
+      # Request body template (Jinja2): messages (role-mapped), system, tools,
+      # model, temperature, max_tokens.
+      body_template: |
+        {
+          "model_id": "{{ model }}",
+          "instances": [{
+            "input_text": {{ (messages | map(attribute='content') | join('\n')) | tojson }},
+            "system_hint": {{ system | tojson }}
+          }],
+          "params": {
+            "temperature": {{ temperature }},
+            "max_output_tokens": {{ max_tokens }},
+            "actions": {{ tools is not none }}
+          }
+        }
+      role_map:
+        system: instruction
+        user: human
+        assistant: ai
+        tool: tool_result
+      # Response extraction by paths (dotted, JSONPath filters, or JMESPath).
+      response:
+        text: prediction.output_text
+        tool_calls: prediction.actions
+        tool_call:
+          name: action_name
+          arguments: action_input
+          id: action_id
+        stop_reason: prediction.finish
+        usage:
+          input: meta.tokens_in
+          output: meta.tokens_out
+        error: err.msg
+        models: catalog
+      streaming:
+        type: sse                   # sse | ndjson | none
+        delta_path: piece.delta_text
+        data_prefix: "data: "
+        done_markers: ["[DONE]"]
+      # false = textual tool calls (<<<WOTAN_TOOL>>> protocol) for weak models.
+      native_tools: true
+      multimodal:
+        enabled: true
+        images_mode: inline_base64  # inline_base64 | upload_url | url
+        documents_mode: inline_base64
+        upload_url: ""
+        upload_response_path: id
+      list_models_url: /mock/api/models
+      list_models_path: catalog
+      list_models_id_path: model_id
+      timeout_seconds: 120
+      max_retries: 3
+      backoff_base_seconds: 1.0
+    models:
+      - id: mock-chat
+        name: Gateway chat model
+        context_window: 32000
+        tools: true
+        streaming: true
+        weak: false
+      - id: mock-weak
+        name: Gateway weak model (textual tools, hashline edits)
+        context_window: 8000
+        tools: true
+        streaming: false
+        weak: true
+        edit_format: hashline
+
+default_provider: fictional_gateway
+default_model: fictional_gateway/mock-chat
+
+# Per-role model selection ("provider/model"; empty = default).
+roles:
+  planner: ""
+  executor: ""
+  summarizer: ""
+  subagent: ""
+  verifier: ""
+
+# External workflows as agent tools (e.g. low-code platform endpoints).
+external_tools:
+  - name: ticket_lookup
+    description: Look up a ticket by id in the workflow platform (example)
+    endpoint: /mock/api/workflows/ticket_lookup
+    method: POST
+    provider_id: fictional_gateway   # reuses this provider's authentication
+    input_template: "{{ inputs | tojson }}"
+    result_path: output
+    parameters:
+      type: object
+      properties:
+        ticket: { type: string, description: "Ticket id, e.g. T-42" }
+      required: [ticket]
+
+# Hooks (Claude-Code style). Exit code 2 blocks the action and injects the
+# message into the agent's context. Defaults (built in): post-edit formatter,
+# pre-tool config-file protection, the stop verification gate.
+hooks:
+  enabled: true
+  hooks: []
+  # Example:
+  # hooks:
+  #   - event: post_tool_use
+  #     command: python -m ruff check --fix --quiet {path}
+  #     matcher: "^(fs_edit|fs_write)$"
+  #   - event: stop
+  #     command: python -m pytest -q
+
+# MCP servers (stdio JSON-RPC) with tools discovered on demand.
+mcp_servers: []
+#  - name: files
+#    command: npx
+#    args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/work"]
