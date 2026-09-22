@@ -24,6 +24,7 @@ from .base import (
     Usage,
 )
 from .errors import LLMError, LLMRateLimitError, LLMTimeoutError
+from .http_retry import is_retryable_exception, parse_retry_after, sleep_backoff
 
 log = get_logger("wotan.providers.openai", component="providers")
 
@@ -143,15 +144,15 @@ class OpenAICompatProvider(LLMProvider):
                             await self.tokens.refresh("force")
                             continue  # retry immediately with a fresh token, doesn't count against backoff
                         if resp.status_code == 429:
-                            retry_after = float(resp.headers.get("Retry-After", backoff_base * (2**attempt_i)))
+                            retry_after = parse_retry_after(resp.headers.get("Retry-After"), backoff_base * (2**attempt_i))
                             await resp.aclose()
                             last_exc = LLMRateLimitError(f"rate limited by OpenAI-compatible endpoint (attempt {attempt_i + 1})")
                             await asyncio.sleep(min(retry_after, 30.0))
                             continue
-                        if resp.status_code in (502, 503, 504):
+                        if resp.status_code in (500, 502, 503, 504):
                             await resp.aclose()
                             last_exc = LLMError(f"OpenAI-compatible endpoint transient error HTTP {resp.status_code}", retryable=True)
-                            await asyncio.sleep(backoff_base * (2**attempt_i))
+                            await sleep_backoff(backoff_base, attempt_i)
                             continue
                         if resp.status_code >= 400:
                             text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
@@ -164,13 +165,13 @@ class OpenAICompatProvider(LLMProvider):
                     await self.tokens.refresh("force")
                     continue
                 if resp.status_code == 429:
-                    retry_after = float(resp.headers.get("Retry-After", backoff_base * (2**attempt_i)))
+                    retry_after = parse_retry_after(resp.headers.get("Retry-After"), backoff_base * (2**attempt_i))
                     last_exc = LLMRateLimitError(f"rate limited by OpenAI-compatible endpoint (attempt {attempt_i + 1})")
                     await asyncio.sleep(min(retry_after, 30.0))
                     continue
-                if resp.status_code in (502, 503, 504):
+                if resp.status_code in (500, 502, 503, 504):
                     last_exc = LLMError(f"OpenAI-compatible endpoint transient error HTTP {resp.status_code}", retryable=True)
-                    await asyncio.sleep(backoff_base * (2**attempt_i))
+                    await sleep_backoff(backoff_base, attempt_i)
                     continue
                 if resp.status_code >= 400:
                     raise LLMError(
@@ -185,6 +186,19 @@ class OpenAICompatProvider(LLMProvider):
             except httpx.TimeoutException as exc:
                 last_exc = LLMTimeoutError(f"OpenAI-compatible request timed out: {exc}")
                 log.warning("openai-compatible request timeout", extra={"data": {"url": url, "attempt": attempt_i}})
+                await sleep_backoff(backoff_base, attempt_i)
+            except Exception as exc:
+                if is_retryable_exception(exc):
+                    last_exc = LLMError(
+                        f"connection error talking to the endpoint: {type(exc).__name__}: {exc}",
+                        retryable=True,
+                        why="network-level failure (connection reset / DNS / proxy hiccup)",
+                        how_to_fix="the adapter retries with backoff automatically; check the gateway URL/VPN if it persists",
+                    )
+                    log.warning("openai-compatible transport error", extra={"data": {"url": url, "attempt": attempt_i, "error": str(exc)}})
+                    await sleep_backoff(backoff_base, attempt_i)
+                    continue
+                raise
         raise last_exc or LLMError("request failed")
 
     def _parse(self, raw: dict[str, Any]) -> ChatResult:

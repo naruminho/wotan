@@ -32,6 +32,16 @@ endpoint.
   automatic rollback (syntax, diff sanity, placeholder/marker/merge-conflict
   checks, optional linter hook), encoding and EOL preservation (UTF-8/BOM/
   cp1252, CRLF/LF), mojibake repair, correct diacritics, emoji-free output.
+- **Artifact generation** (assistant work): real PDF/Word/Excel/PowerPoint/CSV
+  from markdown-lite or data, seeded synthetic datasets (Faker, pt-BR, valid
+  CPF/CNPJ), PNG charts (Pillow, no plotting stack), image transforms,
+  LLM-generated imagery via the configured multimodal gateway (`img_llm`,
+  with auto photorealism/anti-neon prompt directives), sober curated deck
+  themes (KPI cards, tables, timelines, no glossy AI style), synthetic
+  scanned/photographed documents for OCR fixtures (seeded, deterministic),
+  and satellite tile mosaics as fallback (config-guarded provider). Every
+  artifact is read back and verified (`doc_read`) and cited in `finish_task`
+  as on-disk evidence. Optional extra: `pip install -e ".[artifacts]"`.
 - **Verification harness** (critical): acceptance criteria before work starts,
   repro-first bug fixes, `finish_task` cross-checked against the real
   execution log (zero-evidence finishes are refused), dirty-since-verification
@@ -46,7 +56,9 @@ endpoint.
   with task notes, large-output offloading, code-mode tool calls for
   token-starved models, textually-encoded tool calls for weak models, doom-loop
   detection (warn -> stronger model -> stop), planning mode, session search
-  (SQLite FTS5).
+  (SQLite FTS5), and transient-error resilience: step-level retries with
+  backoff for rate limits/5xx/connection resets/timeouts (providers retry
+  internally too, with Retry-After HTTP-date support and jitter).
 - **Weak-model support**: per-role models (planner/executor/summarizer/
   sub-agent), textual tool protocol with auto-repair (`<<<WOTAN_TOOL>>>`,
   fenced and bare-JSON fallbacks, trailing-comma/unquoted-key repair),
@@ -95,7 +107,9 @@ python scripts\build_frontend.py     # npm install + vite build + embed in wotan
 
 Optional extras: `pip install -e ".[pty]"` (ConPTY terminals via pywinpty),
 `".[keyring]"` (Windows Credential Manager for secrets), `".[pdf]"` (PDF
-experiments), `".[app]"` (native window via pywebview), `".[dev]"` (tests).
+experiments), `".[artifacts]"` (document/data/image generation:
+python-docx, openpyxl, python-pptx, reportlab, pillow, faker, pypdf),
+`".[app]"` (native window via pywebview), `".[dev]"` (tests).
 
 ## Configure
 

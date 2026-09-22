@@ -715,8 +715,8 @@ def build_registry() -> ToolRegistry:
         name="finish_task",
         description=(
             "Finish the task. REQUIRES an evidence report matching real execution: which commands ran "
-            "(with run_id/exit codes and output excerpts), files tested, and the status of every acceptance "
-            "criterion. Unverified claims are rejected by the harness."
+            "(with run_id/exit codes and output excerpts), generated artifacts (paths are checked on disk "
+            "and content-sniffed), and the status of every acceptance criterion. Unverified claims are rejected."
         ),
         parameters={
             "type": "object",
@@ -749,6 +749,18 @@ def build_registry() -> ToolRegistry:
                     },
                     "description": "commands actually executed, with the run_id returned by the tool",
                 },
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "generated file (pdf/docx/xlsx/pptx/csv/png...)"},
+                            "min_bytes": {"type": "integer", "description": "minimum plausible size (default 200)"},
+                        },
+                        "required": ["path"],
+                    },
+                    "description": "deliverable files produced by doc_/data_/img_ tools - verified on disk (existence, size, format header, readable content)",
+                },
                 "files_tested": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["summary", "acceptance_criteria", "commands"],
@@ -756,10 +768,385 @@ def build_registry() -> ToolRegistry:
         handler=_finish_task,
         group="core",
     ))
+    _register_artifact_tools(reg)
     return reg
+
+
+def _register_artifact_tools(reg: ToolRegistry) -> None:
+    """Document / data / image generation tools (optional libraries, graceful
+    degradation when the 'artifacts' extra is not installed)."""
+    from .artifact_tools import (_data_chart, _data_csv, _data_synthetic, _doc_docx, _doc_pdf,
+                                 _doc_pptx, _doc_read, _doc_scan_image, _doc_scan_pdf, _doc_xlsx,
+                                 _img_llm, _img_satellite, _img_transform)
+
+    reg.register(Tool(
+        name="doc_pdf",
+        description=(
+            "Generate a real PDF from markdown-lite: headings, **bold**, tables (| col | col |), "
+            "bullets, quotes, code blocks and images via ![alt](path.png). Use for contracts, "
+            "reports, letters, resumes. Page numbers and metadata included."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "destination .pdf path (workspace-relative)"},
+                "content_md": {"type": "string", "description": "markdown-lite content; images: ![alt](path) - use <<<PAGEBREAK>>> on its own line for a page break"},
+                "title": {"type": "string"},
+                "author": {"type": "string"},
+                "subject": {"type": "string"},
+                "page_size": {"type": "string", "enum": ["a4", "letter", "legal"]},
+                "page_numbers": {"type": "boolean", "description": "footer with title + page number (default true)"},
+                "margin_cm": {"type": "number", "description": "page margin in cm (default 2)"},
+            },
+            "required": ["path", "content_md"],
+        },
+        handler=_doc_pdf,
+        aliases=("pdf_write",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_docx",
+        description="Generate a Word .docx from the same markdown-lite (headings, tables, images, hyperlinks). Use when the user asks for 'documento do Word'.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content_md": {"type": "string"},
+                "title": {"type": "string"},
+                "author": {"type": "string"},
+                "subject": {"type": "string"},
+            },
+            "required": ["path", "content_md"],
+        },
+        handler=_doc_docx,
+        aliases=("docx_write",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_xlsx",
+        description=(
+            "Generate an Excel .xlsx workbook: sheets of 2D rows with auto-typed cells (numbers, ISO dates, "
+            "booleans, =FORMULAS), styled header, frozen first row, optional autofilter. Use for spreadsheets."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "sheets": {
+                    "type": "array",
+                    "description": "e.g. [{\"name\": \"Vendas\", \"rows\": [[\"mes\", \"valor\"], [\"Jan\", 120]], \"autofilter\": true}]",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "rows": {"type": "array", "items": {"type": "array"}},
+                            "header": {"type": "boolean", "description": "style first row as header (default auto)"},
+                            "freeze": {"type": "boolean", "description": "freeze header row (default true)"},
+                            "autofilter": {"type": "boolean"},
+                            "col_widths": {"type": "array", "items": {"type": "number"}},
+                        },
+                        "required": ["rows"],
+                    },
+                },
+            },
+            "required": ["path", "sheets"],
+        },
+        handler=_doc_xlsx,
+        aliases=("xlsx_write",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_pptx",
+        description=(
+            "Generate a BEAUTIFUL, sober PowerPoint .pptx deck (minimalist editorial design - never the "
+            "glossy neon AI style). Slide layouts: title, section, agenda, bullets (+optional image_path "
+            "and takeaway), two_content (left/right + titles), kpi (cards [{value, label}] + takeaway), "
+            "chart (chart image + takeaway), table (rows + col_widths), timeline (steps [{label, sub}]), "
+            "image (full-bleed or titled, with caption), quote. Curated themes: executive, nordic, "
+            "editorial, graphite, terra. Footer + page numbers automatic. Use for 'apresentacao' requests."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "slides": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "layout": {"type": "string", "enum": ["title", "section", "agenda", "bullets", "two_content", "kpi", "chart", "table", "timeline", "image", "quote"]},
+                            "kicker": {"type": "string", "description": "small uppercase label above the title (eyebrow)"},
+                            "title": {"type": "string"},
+                            "subtitle": {"type": "string"},
+                            "bullets": {"type": "array", "items": {"type": "string"}, "description": "'> ' prefix = sub-bullet"},
+                            "takeaway": {"type": "string", "description": "one-line italic conclusion at the bottom"},
+                            "left": {"type": "array", "items": {"type": "string"}}, "left_title": {"type": "string"},
+                            "right": {"type": "array", "items": {"type": "string"}}, "right_title": {"type": "string"},
+                            "cards": {"type": "array", "description": "kpi: [{value: 'R$ 42M', label: 'Receita (+18%)'}] (max 4)", "items": {"type": "object", "properties": {"value": {"type": "string"}, "label": {"type": "string"}}}},
+                            "rows": {"type": "array", "items": {"type": "array"}, "description": "table: first row = header"},
+                            "col_widths": {"type": "array", "items": {"type": "number"}},
+                            "steps": {"type": "array", "description": "timeline: [{label, sub}]", "items": {"type": "object", "properties": {"label": {"type": "string"}, "sub": {"type": "string"}}}},
+                            "image_path": {"type": "string", "description": "workspace-relative image (chart png, img_llm photo...)"},
+                            "caption": {"type": "string"},
+                            "text": {"type": "string", "description": "quote text"},
+                            "author": {"type": "string"},
+                            "notes": {"type": "string", "description": "speaker notes"},
+                        },
+                        "required": ["layout"],
+                    },
+                },
+                "aspect": {"type": "string", "enum": ["16:9", "4:3"]},
+                "theme": {"type": "string", "enum": ["executive", "nordic", "editorial", "graphite", "terra"], "description": "muted curated theme (default executive)"},
+                "title": {"type": "string", "description": "deck metadata title"},
+                "footer_title": {"type": "string", "description": "small footer text on content slides (e.g. deck name)"},
+            },
+            "required": ["path", "slides"],
+        },
+        handler=_doc_pptx,
+        aliases=("pptx_write",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_read",
+        description=(
+            "Read back a generated artifact (pdf, docx, xlsx, pptx, csv, json, txt) as text. "
+            "ALWAYS use it after generating a document to verify the content before finishing."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_chars": {"type": "integer", "description": "text cap (default 8000)"},
+            },
+            "required": ["path"],
+        },
+        handler=_doc_read,
+        aliases=("artifact_read",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="data_csv",
+        description="Write a .csv (2D rows, or {header, rows} / list-of-objects / {col: [values]} shapes). utf-8-sig recommended for Excel users; delimiter ';' for BR Excel.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "rows": {"type": "array", "items": {}, "description": "2D array or object shapes"},
+                "delimiter": {"type": "string", "description": "default ',' - use ';' for Brazilian Excel"},
+                "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig", "latin-1", "cp1252"]},
+                "header": {"type": "boolean", "description": "treat first row as header (default true)"},
+            },
+            "required": ["path", "rows"],
+        },
+        handler=_data_csv,
+        aliases=("csv_write",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="data_synthetic",
+        description=(
+            "Generate REALISTIC synthetic data (Faker, deterministic under seed): names, e-mails, CPF/CNPJ "
+            "(valid check digits), phones, CEP, addresses, dates, money, categories. Output: csv | xlsx | "
+            "json | md. Use for test data, demos and population of spreadsheets."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "object",
+                    "description": "e.g. {\"nome\": \"name\", \"email\": \"email\", \"cpf\": \"cpf\", \"salario\": {\"type\": \"money\", \"min\": 1500, \"max\": 20000}, \"uf\": {\"type\": \"choice\", \"choices\": [\"SP\", \"RJ\"]}}",
+                },
+                "rows": {"type": "integer", "description": "row count (default 20, max 100000)"},
+                "seed": {"type": "integer", "description": "same seed = same data (default 42)"},
+                "locale": {"type": "string", "description": "Faker locale, default pt_BR"},
+                "format": {"type": "string", "enum": ["csv", "xlsx", "json", "md"]},
+                "path": {"type": "string", "description": "destination file (required to save)"},
+            },
+            "required": ["schema", "rows"],
+        },
+        handler=_data_synthetic,
+        aliases=("synth_data",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="data_chart",
+        description=(
+            "Render a chart PNG (no plotting stack needed): bar, hbar, line, area, pie, donut, scatter, "
+            "histogram. Embed it in PDF/DOCX/PPTX via ![alt](path)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "kind": {"type": "string", "enum": ["bar", "hbar", "line", "area", "pie", "donut", "scatter", "histogram"]},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "series": {
+                    "type": "array",
+                    "description": "e.g. [{\"name\": \"Vendas\", \"values\": [10, 20, 30]}] (scatter needs two series: x and y)",
+                    "items": {"type": "object", "properties": {"name": {"type": "string"}, "values": {"type": "array", "items": {"type": "number"}}, "color": {"type": "string"}}},
+                },
+                "title": {"type": "string"},
+                "width": {"type": "integer"}, "height": {"type": "integer"},
+                "palette": {"type": "string", "enum": ["blue", "green", "warm"]},
+                "x_label": {"type": "string"}, "y_label": {"type": "string"},
+                "bins": {"type": "integer", "description": "histogram bins (default 10)"},
+            },
+            "required": ["path", "kind", "series"],
+        },
+        handler=_data_chart,
+        aliases=("chart_png",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="img_transform",
+        description=(
+            "Edit an image with Pillow: ops chain of resize/crop/rotate/grayscale/flip_h/flip_v/brightness/"
+            "contrast/watermark/border (+convert via dest extension). Use to prepare images before embedding."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "src": {"type": "string"},
+                "dest": {"type": "string", "description": "optional; default <stem>_edit.<ext>"},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "enum": ["resize", "crop", "rotate", "grayscale", "flip_h", "flip_v", "brightness", "contrast", "watermark", "border"]},
+                            "width": {"type": "number"}, "height": {"type": "number"}, "scale": {"type": "number"},
+                            "left": {"type": "integer"}, "top": {"type": "integer"}, "right": {"type": "integer"}, "bottom": {"type": "integer"},
+                            "degrees": {"type": "number"}, "factor": {"type": "number"},
+                            "text": {"type": "string", "description": "watermark text"},
+                            "position": {"type": "string", "enum": ["top-left", "top-right", "bottom-left", "bottom-right"]},
+                            "opacity": {"type": "number"},
+                            "border_width": {"type": "integer"}, "color": {"type": "string"},
+                            "quality": {"type": "integer"},
+                        },
+                        "required": ["op"],
+                    },
+                },
+            },
+            "required": ["src", "ops"],
+        },
+        handler=_img_transform,
+        aliases=("image_edit",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="img_llm",
+        description=(
+            "Generate an image with the configured multimodal model (artifacts.image_generation in "
+            "config.yaml). FOR PEOPLE: write detailed photographic prompts - 'fotografia realista, "
+            "luz natural, textura de pele real' - the tool adds anti-blur/anti-plastic directives "
+            "automatically. FOR infographics/diagrams: ask for 'design editorial minimalista, cores "
+            "dessaturadas, sem neon' (also auto-added). Prefer this over img_satellite for aerial views."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "detailed image prompt (be specific: scene, angle, light, mood)"},
+                "path": {"type": "string", "description": "destination .png/.jpg in the workspace"},
+                "size": {"type": "string", "description": "e.g. 1024x1024, 1536x1024 (provider-dependent)"},
+                "style_hint": {"type": "string", "description": "extra style directive appended to the prompt"},
+            },
+            "required": ["prompt", "path"],
+        },
+        handler=_img_llm,
+        aliases=("llm_image", "generate_image"),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_scan_image",
+        description=(
+            "Render a SYNTHETIC SCANNED/photographed document image for OCR experiments: markdown-lite "
+            "and/or a form spec (labeled fields with handwriting-look values, checkboxes, seed-generated "
+            "signature squiggle, rotated stamp), degraded like a real scan (rotation, paper tint, shadow "
+            "gradient, sensor noise, blur, JPEG artifacts) or a phone photo (perspective skew + vignette). "
+            "modes: scan | photo | photocopy. Deterministic under seed."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content_md": {"type": "string", "description": "markdown-lite document; '[x]'/'[ ]' at line/item start become checkboxes"},
+                "form": {
+                    "type": "object",
+                    "properties": {
+                        "fields": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}, "full": {"type": "boolean"}}}},
+                        "checkboxes": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "checked": {"type": "boolean"}}}},
+                        "signature": {"type": "boolean"},
+                        "stamp_text": {"type": "string", "description": "'LINE1 | LINE2' - rotated muted stamp"},
+                    },
+                },
+                "mode": {"type": "string", "enum": ["scan", "photo", "photocopy"]},
+                "seed": {"type": "integer"},
+                "dpi": {"type": "integer", "description": "default 150 (A4)"},
+            },
+            "required": ["path"],
+        },
+        handler=_doc_scan_image,
+        aliases=("scan_image", "ocr_fixture"),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_scan_pdf",
+        description=(
+            "Multi-page scanned-style PDF (image-backed pages): content_md with <<<PAGEBREAK>>>, or "
+            "form_pages=[{content_md?, fields?, checkboxes?, signature?, stamp_text?}] - one degraded "
+            "page per entry. Use to build OCR test sets."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content_md": {"type": "string"},
+                "form": {"type": "object", "description": "form spec applied to page 1 (or merged into each form_pages entry)"},
+                "form_pages": {"type": "array", "items": {"type": "object"}},
+                "mode": {"type": "string", "enum": ["scan", "photo", "photocopy"]},
+                "seed": {"type": "integer"},
+                "dpi": {"type": "integer"},
+                "title": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+        handler=_doc_scan_pdf,
+        aliases=("scan_pdf",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="img_satellite",
+        description=(
+            "PREFERRED for aerial/satellite imagery: generate it with img_llm (the multimodal model). "
+            "This tool is the tile-mosaic fallback: fetches real tiles around lat/lon from the provider "
+            "configured in artifacts.satellite.base_url (host allow-list enforced, attribution embedded). "
+            "Clear error when no provider/network is available."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "lat": {"type": "number"},
+                "lon": {"type": "number"},
+                "path": {"type": "string"},
+                "zoom": {"type": "integer", "description": "1-21, default 18 (street/parcel level)"},
+                "tiles": {"type": "integer", "description": "1-3: mosaic of 2x2..6x6 tiles (default 2)"},
+                "attribution": {"type": "string"},
+            },
+            "required": ["lat", "lon", "path"],
+        },
+        handler=_img_satellite,
+        aliases=("satellite_image",),
+        group="artifacts",
+    ))
 
 
 CORE_TOOL_NAMES = (
     "fs_list", "fs_glob", "fs_grep", "fs_read", "fs_edit", "fs_multi_edit", "fs_write",
     "shell_exec", "py_run", "web_search", "web_fetch", "todo_write", "ask_user", "finish_task",
+)
+
+ARTIFACT_TOOL_NAMES = (
+    "doc_pdf", "doc_docx", "doc_xlsx", "doc_pptx", "doc_read",
+    "data_csv", "data_synthetic", "data_chart", "img_transform", "img_satellite",
+    "img_llm", "doc_scan_image", "doc_scan_pdf",
 )

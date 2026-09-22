@@ -243,7 +243,41 @@ class AgentSession:
             finish_task_cb=self._finish_task,
             todo_sink=self._set_todos,
         )
+        ctx.extra["artifacts_config"] = getattr(self.config, "artifacts", None)
+        ctx.extra["imagegen"] = self._generate_image
         return ctx
+
+    async def _generate_image(self, prompt: str, dest, args: dict[str, Any]) -> dict[str, Any]:
+        """Generate an image through the CONFIGURED gateway (img_llm tool)."""
+        from ..artifacts.llm_image import generate_image as gateway_generate
+
+        ig = getattr(self.config.artifacts, "image_generation", None) if hasattr(self.config, "artifacts") else None
+        if ig is None or not getattr(ig, "provider_id", ""):
+            raise ValueError(
+                "no image-generation provider configured: add artifacts.image_generation "
+                "{provider_id, model} to config.yaml (the provider must expose an "
+                "OpenAI-compatible /images/generations endpoint)"
+            )
+        pc = self.config.find_provider(ig.provider_id)
+        if pc is None:
+            raise ValueError(f"artifacts.image_generation.provider_id {ig.provider_id!r} not found in providers")
+        provider = self.registry.get(pc.id)
+        headers: dict[str, str] = dict(pc.raw.get("headers") or {})
+        tokens = getattr(provider, "tokens", None)
+        if tokens is not None:
+            await tokens.apply_auth(headers)
+        endpoint = ig.endpoint or (pc.base_url or "")
+        return await gateway_generate(
+            dest,
+            prompt,
+            base_url=endpoint,
+            headers=headers,
+            model=ig.model or "",
+            size=str(args.get("size") or ig.size),
+            timeout=float(ig.timeout_seconds),
+            style_hint=str(args.get("style_hint", "")),
+            extra_body=dict(ig.extra_body or {}),
+        )
 
     # -- callbacks used by tools ----------------------------------------------
     async def _execute(self, command: str, kind: str = "bash", cwd: str = ".", timeout: float = 120, background: bool = False) -> ExecResult:
@@ -347,6 +381,12 @@ class AgentSession:
     async def _finish_task(self, report: dict[str, Any]) -> dict[str, Any]:
         self.state.status = "verifying"
         await self._emit({"type": "status", "status": "running on_stop verification"})
+        # claimed deliverables (generated documents/data) are verified on disk
+        artifact_checks: list[Any] = []
+        if report.get("artifacts"):
+            artifact_checks = self.gate.check_artifacts(list(report.get("artifacts") or []), self.workspace)
+            for c in artifact_checks:
+                await self._emit({"type": "artifact_check", "ok": c.ok, "message": c.message})
         # on_stop hook: run project verification commands before accepting.
         verify_cmds = list(self.config.verification.commands)
         agents_md = self.workspace / "AGENTS.md"
@@ -371,7 +411,7 @@ class AgentSession:
             report.setdefault("verification_runs", []).extend(
                 [{"run_id": hr.get("run_id"), "command": hr["command"], "exit_code": hr["exit_code"]} for hr in hook_results]
             )
-        verdict = self.gate.evaluate_finish(report)
+        verdict = self.gate.evaluate_finish(report, artifact_checks=artifact_checks)
         await self._emit({"type": "finish_verdict", **verdict})
         return verdict
 
@@ -474,6 +514,7 @@ class AgentSession:
             repo_map=self.repo_map.render(focus_files=set(self.todos and [] or ()), token_budget=1500),
             notes=self.task_notes.get("notes", ""),
             agent_mode=self.agent_mode,
+            artifacts=self.agent_mode not in ("Plan", "Chat") and getattr(self.config.artifacts, "enabled", True),
         )
 
     def _resolve_model(self, model_ref: str):
@@ -521,13 +562,34 @@ class AgentSession:
 
             try:
                 self._current_llm_task = asyncio.current_task()
-                result: ChatResult = await provider.chat(
-                    messages, tools=tools, model=model_id,
-                    temperature=0.2, max_tokens=None, stream=None, on_event=on_event,
-                )
+                result: ChatResult | None = None
+                # Step-level resilience: transient provider errors (rate limit,
+                # 5xx, connection reset, timeout) are retried with backoff so a
+                # single gateway blip does not kill the whole turn. Providers
+                # already retry internally; this is the last-resort layer.
+                step_retries = max(0, int(getattr(self.config.limits, "llm_step_retries", 2)))
+                for attempt in range(step_retries + 1):
+                    try:
+                        result = await provider.chat(
+                            messages, tools=tools, model=model_id,
+                            temperature=0.2, max_tokens=None, stream=None, on_event=on_event,
+                        )
+                        break
+                    except LLMError as exc:
+                        if not getattr(exc, "retryable", False) or attempt >= step_retries:
+                            raise
+                        wait_s = min(2.0 * (2 ** attempt), 15.0)
+                        await self._emit({"type": "warning", "message": (
+                            f"provider transient error (attempt {attempt + 1}/{step_retries + 1}), "
+                            f"retrying in {wait_s:.0f}s: {exc}")})
+                        await self._emit({"type": "status", "status": "retrying after provider error"})
+                        await asyncio.sleep(wait_s)
+                assert result is not None
             except LLMError as exc:
                 await self._emit({"type": "error", "message": str(exc), "provider_error": exc.to_dict()})
                 return {"status": "error", "message": str(exc)}
+            except asyncio.CancelledError:
+                return {"status": "stopped", "message": "stopped by user"}
             finally:
                 self._current_llm_task = None
 

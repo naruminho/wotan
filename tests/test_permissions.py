@@ -141,3 +141,39 @@ def test_doomloop_repeating_output_stops():
     for _ in range(5):
         ev = d.note_assistant_text("exactly the same text")
     assert ev is not None and ev.action == "stop"
+
+
+# ---------------------------------------------------------------------------
+# artifact tools follow the same policy as file edits / network sends
+# ---------------------------------------------------------------------------
+
+def test_artifact_writers_ask_in_ask_mode():
+    p = PermissionPolicy(PermissionsConfig(), mode="ask")
+    d = p.check_tool("doc_pdf", {"path": "contrato.pdf"})
+    assert d.allowed and d.needs_approval
+    d2 = p.check_tool("data_synthetic", {"path": "pessoas.csv"})
+    assert d2.allowed and d2.needs_approval
+
+
+def test_artifact_writers_auto_in_edits_mode():
+    p = PermissionPolicy(PermissionsConfig(), mode="edits")
+    d = p.check_tool("doc_xlsx", {"path": "plan.xlsx"})
+    assert d.allowed and not d.needs_approval
+
+
+def test_artifact_protected_paths_blocked():
+    p = PermissionPolicy(PermissionsConfig(), mode="autonomous")
+    d = p.check_tool("doc_docx", {"path": "pyproject.toml"})
+    assert not d.allowed
+
+
+def test_satellite_network_policy():
+    p = PermissionPolicy(PermissionsConfig(), mode="ask")
+    d = p.check_tool("img_satellite", {"lat": -23.5, "lon": -46.6, "path": "s.jpg"})
+    assert d.allowed and d.needs_approval
+    p2 = PermissionPolicy(PermissionsConfig(), mode="autonomous")
+    d2 = p2.check_tool("img_satellite", {"lat": -23.5, "lon": -46.6, "path": "s.jpg"})
+    assert d2.allowed and not d2.needs_approval
+    p2.tainted = True
+    d3 = p2.check_tool("img_satellite", {"lat": -23.5, "lon": -46.6, "path": "s.jpg"})
+    assert d3.needs_approval  # Rule of Two

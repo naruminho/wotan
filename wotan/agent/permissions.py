@@ -104,6 +104,12 @@ class PermissionPolicy:
             return PermissionDecision(True, True, "permission mode 'ask': file edits require approval", "mode:ask")
         return PermissionDecision(True, False, f"permission mode '{self.mode}'", f"mode:{self.mode}")
 
+    # file-producing artifact tools follow the same edit policy as fs_write
+    _ARTIFACT_WRITERS = frozenset({
+        "doc_pdf", "doc_docx", "doc_xlsx", "doc_pptx",
+        "data_csv", "data_synthetic", "data_chart", "img_transform",
+    })
+
     def check_tool(self, tool_name: str, arguments: dict) -> PermissionDecision:
         """Generic gate used by pre_tool_use hooks."""
         if tool_name in ("shell_exec", "bash", "shell", "run_command", "py_run", "run_python"):
@@ -111,4 +117,13 @@ class PermissionPolicy:
         if tool_name in ("fs_edit", "fs_write", "fs_multi_edit", "fs_apply_patch", "fs_hashline_edit",
                          "edit_file", "write_file", "multi_edit", "apply_patch", "hashline_edit"):
             return self.check_edit(str(arguments.get("path", "")))
+        if tool_name in self._ARTIFACT_WRITERS:
+            return self.check_edit(str(arguments.get("path", "")))
+        if tool_name == "img_satellite":
+            # network tile fetch: approval in ask mode, Rule of Two when tainted
+            if self.tainted:
+                return PermissionDecision(True, True, "session is tainted by external content: satellite tile fetch needs approval (Rule of Two)", "rule_of_two")
+            if self.mode == "ask":
+                return PermissionDecision(True, True, "permission mode 'ask': network fetches require approval", "mode:ask")
+            return PermissionDecision(True, False, f"permission mode '{self.mode}'", f"mode:{self.mode}")
         return PermissionDecision(True, False, "read-only or trusted tool", "default")

@@ -175,6 +175,45 @@ class LimitsConfig:
     tool_timeout_seconds: float = 120.0
     stall_warning_seconds: float = 60.0
     doom_loop_window: int = 10
+    llm_step_retries: int = 2  # step-level retries for retryable LLM errors
+
+
+@dataclass
+class SatelliteConfig:
+    """Tile provider for img_satellite (host allow-list is an SSRF guard)."""
+
+    base_url: str = ""  # template with {z}/{x}/{y} (Esri uses {z}/{y}/{x})
+    allowed_hosts: list[str] = field(default_factory=list)
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: float = 20.0
+    attribution: str = "Imagens: Esri, Maxar, Earthstar Geographics"
+
+
+@dataclass
+class ImageGenerationConfig:
+    """LLM image generation (img_llm) via the configured gateway.
+
+    ``provider_id`` selects a provider from the providers list (its auth/base
+    URL are reused). ``endpoint`` overrides the default
+    ``{base_url}/images/generations`` (full URL or path)."""
+
+    provider_id: str = ""
+    model: str = ""
+    api: str = "openai_images"  # openai_images | auto
+    endpoint: str = ""
+    size: str = "1024x1024"
+    timeout_seconds: float = 120.0
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ArtifactsConfig:
+    """Document/data/image generation (doc_pdf, data_synthetic, ...)."""
+
+    enabled: bool = True
+    max_file_mb: float = 50.0
+    satellite: SatelliteConfig = field(default_factory=SatelliteConfig)
+    image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
 
 
 @dataclass
@@ -289,6 +328,7 @@ class AppConfig:
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
     verification: VerificationConfig = field(default_factory=VerificationConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
+    artifacts: ArtifactsConfig = field(default_factory=ArtifactsConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     web: WebFetchConfig = field(default_factory=WebFetchConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
@@ -364,6 +404,12 @@ def parse_config(data: dict[str, Any], source: str = "") -> AppConfig:
     cfg.permissions = _build(PermissionsConfig, data.get("permissions"))
     cfg.verification = _build(VerificationConfig, data.get("verification"))
     cfg.limits = _build(LimitsConfig, data.get("limits"))
+    artifacts_raw = dict(data.get("artifacts") or {})
+    satellite_cfg = _build(SatelliteConfig, artifacts_raw.get("satellite"))
+    imagegen_cfg = _build(ImageGenerationConfig, artifacts_raw.get("image_generation"))
+    cfg.artifacts = _build(ArtifactsConfig, {k: v for k, v in artifacts_raw.items() if k not in ("satellite", "image_generation")})
+    cfg.artifacts.satellite = satellite_cfg
+    cfg.artifacts.image_generation = imagegen_cfg
     cfg.search = _build(SearchConfig, data.get("search"))
     cfg.web = _build(WebFetchConfig, data.get("web"))
     hooks_raw = data.get("hooks") or {}

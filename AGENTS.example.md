@@ -31,6 +31,13 @@ commands, not prose. Wotan loads it automatically at session start.
 - `cd frontend && npx vitest run`
 - `python scripts/build_frontend.py --skip-install`
 
+## Artifacts (documents/data for the user)
+
+- Generate real files with doc_pdf / doc_docx / doc_xlsx / doc_pptx / data_csv /
+  data_synthetic / data_chart / img_transform / img_satellite.
+- ALWAYS verify with doc_read before finishing and cite files under
+  `artifacts` in finish_task (the gate opens and checks them).
+
 ## Edit rules
 
 - Targeted edits only (old_string/new_string); no whole-file rewrites.
