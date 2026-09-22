@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -114,36 +115,87 @@ class AnthropicProvider(LLMProvider):
         url = f"{self.base_url}/v1/messages"
         self.last_request_debug = {"url": url, "body": body}
         client = await self._get_client()
-        headers = await self._headers()
 
-        try:
-            if want_stream:
-                async with client.stream("POST", url, json=body, headers=headers) as resp:
-                    if resp.status_code >= 400:
-                        text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
+        # Retry loop aligned with openai_compat: 401 refresh-once, 429/5xx
+        # backoff, timeouts and transport errors are retried - a single blip
+        # from the endpoint must not kill the agent turn.
+        max_retries = int(self.cfg.raw.get("max_retries", 3))
+        backoff_base = float(self.cfg.raw.get("backoff_base_seconds", 1.0))
+        last_exc: Exception | None = None
+        for attempt_i in range(max(1, max_retries)):
+            headers = await self._headers()
+            try:
+                if want_stream:
+                    async with client.stream("POST", url, json=body, headers=headers) as resp:
+                        if resp.status_code == 401 and attempt_i == 0:
+                            self.tokens._info = None
+                            await self.tokens.refresh("force")
+                            continue
                         if resp.status_code == 429:
-                            raise LLMRateLimitError("rate limited by Anthropic endpoint")
-                        raise LLMError(f"HTTP {resp.status_code}", status=resp.status_code, why=text,
-                                       how_to_fix="check base_url, x-api-key and model id")
-                    return await self._consume(resp, on_event)
-            resp = await client.post(url, json=body, headers=headers)
-            if resp.status_code == 401:
-                self.tokens._info = None
-                await self.tokens.refresh("force")
-                headers = await self._headers()
+                            from .http_retry import parse_retry_after, sleep_backoff
+
+                            retry_after = parse_retry_after(resp.headers.get("Retry-After"), backoff_base * (2**attempt_i))
+                            await resp.aclose()
+                            last_exc = LLMRateLimitError(f"rate limited by Anthropic endpoint (attempt {attempt_i + 1})")
+                            await asyncio.sleep(min(retry_after, 30.0))
+                            continue
+                        if resp.status_code in (500, 502, 503, 504):
+                            await resp.aclose()
+                            last_exc = LLMError(f"Anthropic endpoint transient error HTTP {resp.status_code}", retryable=True)
+                            await sleep_backoff(backoff_base, attempt_i)
+                            continue
+                        if resp.status_code >= 400:
+                            text = (await resp.aread()).decode("utf-8", errors="replace")[:500]
+                            raise LLMError(f"HTTP {resp.status_code}", status=resp.status_code, why=text,
+                                           how_to_fix="check base_url, x-api-key and model id")
+                        return await self._consume(resp, on_event)
                 resp = await client.post(url, json=body, headers=headers)
-            if resp.status_code == 429:
-                raise LLMRateLimitError("rate limited by Anthropic endpoint")
-            if resp.status_code >= 400:
-                raise LLMError(
-                    f"HTTP {resp.status_code}", status=resp.status_code, why=resp.text[:500],
-                    how_to_fix="check base_url, x-api-key and model id",
-                )
-            raw = resp.json()
-            self.last_response_debug = raw
-            return self._parse(raw)
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(f"Anthropic request timed out: {exc}") from exc
+                if resp.status_code == 401 and attempt_i == 0:
+                    self.tokens._info = None
+                    await self.tokens.refresh("force")
+                    continue
+                if resp.status_code == 429:
+                    from .http_retry import parse_retry_after
+
+                    retry_after = parse_retry_after(resp.headers.get("Retry-After"), backoff_base * (2**attempt_i))
+                    last_exc = LLMRateLimitError(f"rate limited by Anthropic endpoint (attempt {attempt_i + 1})")
+                    await asyncio.sleep(min(retry_after, 30.0))
+                    continue
+                if resp.status_code in (500, 502, 503, 504):
+                    from .http_retry import sleep_backoff
+
+                    last_exc = LLMError(f"Anthropic endpoint transient error HTTP {resp.status_code}", retryable=True)
+                    await sleep_backoff(backoff_base, attempt_i)
+                    continue
+                if resp.status_code >= 400:
+                    raise LLMError(
+                        f"HTTP {resp.status_code}", status=resp.status_code, why=resp.text[:500],
+                        how_to_fix="check base_url, x-api-key and model id",
+                    )
+                raw = resp.json()
+                self.last_response_debug = raw
+                return self._parse(raw)
+            except httpx.TimeoutException as exc:
+                from .http_retry import sleep_backoff
+
+                last_exc = LLMTimeoutError(f"Anthropic request timed out: {exc}")
+                log.warning("anthropic request timeout", extra={"data": {"url": url, "attempt": attempt_i}})
+                await sleep_backoff(backoff_base, attempt_i)
+            except Exception as exc:
+                from .http_retry import is_retryable_exception, sleep_backoff
+
+                if is_retryable_exception(exc):
+                    last_exc = LLMError(
+                        f"connection error talking to the Anthropic endpoint: {type(exc).__name__}: {exc}",
+                        retryable=True,
+                        why="network-level failure (connection reset / DNS / proxy hiccup)",
+                        how_to_fix="the adapter retries with backoff automatically; check the network if it persists",
+                    )
+                    log.warning("anthropic transport error", extra={"data": {"url": url, "attempt": attempt_i, "error": str(exc)}})
+                    await sleep_backoff(backoff_base, attempt_i)
+                    continue
+                raise
+        raise last_exc or LLMError("request failed")
 
     def _parse(self, raw: dict[str, Any]) -> ChatResult:
         result = ChatResult(stop_reason=raw.get("stop_reason") or "stop")

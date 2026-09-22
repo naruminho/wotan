@@ -61,6 +61,31 @@ limits:
   llm_timeout_seconds: 180
   tool_timeout_seconds: 120
   stall_warning_seconds: 60
+  # Step-level retries for TRANSIENT LLM errors (rate limit, 5xx, connection
+  # reset, timeout). Providers already retry internally; this is the last
+  # layer so one gateway blip never kills the whole turn.
+  llm_step_retries: 2
+
+artifacts:
+  # Document/data/image generation (doc_pdf, doc_docx, doc_xlsx, doc_pptx,
+  # doc_csv, data_synthetic, data_chart, img_transform, img_satellite).
+  # Needs: pip install -e ".[artifacts]"
+  enabled: true
+  max_file_mb: 50
+  satellite:
+    # Tile provider for img_satellite (real satellite imagery around a lat/lon).
+    # The URL is a template with {z}/{x}/{y}; the host allow-list is an SSRF
+    # guard - only these hosts may be fetched. Esri World Imagery example:
+    #   base_url: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+    # NASA GIBS (Blue Marble) example:
+    #   base_url: https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{z}/{y}/{x}.jpeg
+    base_url: ${SATELLITE_TILE_URL:-}
+    allowed_hosts:
+      - server.arcgisonline.com
+      - gibs.earthdata.nasa.gov
+    headers: {}
+    timeout_seconds: 20
+    attribution: "Imagens: Esri, Maxar, Earthstar Geographics"
 
 search:
   # Web search is pluggable and can be turned off entirely.

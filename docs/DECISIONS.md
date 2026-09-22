@@ -134,3 +134,27 @@ frontend/ (React + TypeScript + Vite)
 | 14 Chat UX | `frontend/src/components/`, `state/store.ts` |
 | 15 Assistant mode | `wotan/agent/{memory,scheduler}.py`, `frontend/src/components/AssistantPanel.tsx` |
 | 16 Experiment factory | `wotan/gateway_client/`, `experiments/`, `skills/internal-platform/`, `evals/` |
+
+7. **Artifact generation is a tool layer, not code the agent writes**: the
+   model calls doc_pdf/doc_docx/doc_xlsx/doc_pptx/data_csv/data_synthetic/
+   data_chart/img_transform/img_satellite instead of producing throwaway
+   scripts. Libraries are the established ones (python-docx, openpyxl,
+   python-pptx, reportlab, pillow, faker, pypdf) and live behind the optional
+   `artifacts` extra; without it every tool degrades to ERROR/WHY/HOW TO FIX.
+   All outputs stay inside the workspace (same `_inside` policy as fs tools).
+   Documents share one markdown-lite parser (`wotan/artifacts/common.py`) so
+   PDF and Word render the same source; `doc_read` reads artifacts back and
+   the verification gate treats verified artifacts as hard finish evidence
+   (existence + size + format header + text extraction) - document tasks can
+   finish honestly without a test suite.
+8. **Satellite imagery is config-guarded**: `img_satellite` fetches a slippy
+   map tile mosaic from a provider URL template in
+   `artifacts.satellite.base_url`, with a host allow-list (SSRF guard), a
+   realistic tile cap and embedded attribution. No arbitrary URL fetches.
+9. **Transient-failure resilience is layered**: (a) providers retry 401
+   refresh-once, 429 (Retry-After: seconds OR HTTP-date - parsed defensively
+   after a real ValueError crash), 5xx (500 included), timeouts and
+   httpx.TransportError with capped, jittered backoff
+   (`providers/http_retry.py`); (b) the session retries retryable LLM errors
+   per step (`limits.llm_step_retries`, default 2) with visible warnings and
+   cancels cleanly on stop; (c) non-retryable errors fail once, fast.

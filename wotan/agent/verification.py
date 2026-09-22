@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ..config import VerificationConfig
@@ -151,6 +152,51 @@ class VerificationGate:
             )
         return EvidenceCheck(ok=True, message="no unverified changes")
 
+    def check_artifacts(self, artifacts: list[dict[str, Any]], workspace: Path) -> list[EvidenceCheck]:
+        """Verify claimed deliverables on disk: existence, plausible size,
+        format header and (when the format library is available) readable
+        content. A generated PDF that cannot be opened is a failed artifact."""
+        checks: list[EvidenceCheck] = []
+        from ..artifacts.readers import read_text, sniff_header
+
+        for claim in artifacts or []:
+            path = str(claim.get("path", "")).strip()
+            if not path:
+                checks.append(EvidenceCheck(ok=False, message="artifact claim with empty path"))
+                continue
+            p = workspace / path
+            if not p.is_file():
+                p = workspace / path.replace("\\", "/")
+            probe = sniff_header(p)
+            if probe == "file does not exist":
+                checks.append(EvidenceCheck(
+                    ok=False,
+                    message=(f"claimed artifact was never created: {path!r}. The harness refuses completion. "
+                             "Create it with the doc_/data_/img_ tools first."),
+                ))
+                continue
+            if probe != "ok":
+                checks.append(EvidenceCheck(ok=False, message=f"artifact {path!r} failed verification: {probe}"))
+                continue
+            min_bytes = int(claim.get("min_bytes", 200))
+            size = p.stat().st_size
+            if size < min_bytes:
+                checks.append(EvidenceCheck(
+                    ok=False,
+                    message=f"artifact {path!r} is suspiciously small ({size} bytes < {min_bytes}) - regenerate it",
+                ))
+                continue
+            detail = ""
+            try:
+                data = read_text(p, max_chars=400)
+                text = str(data.get("text") or "").strip()
+                if text:
+                    detail = f" ({text[:60].replace(chr(10), ' ')}...)"
+            except Exception:
+                detail = " (content not text-extractable)"
+            checks.append(EvidenceCheck(ok=True, message=f"verified artifact {path!r}: {size} bytes{detail}"))
+        return checks
+
     def scan_test_tampering(self, diff_text: str) -> list[str]:
         """Highlight suspicious changes inside test files (strict mode blocks)."""
         problems: list[str] = []
@@ -166,26 +212,36 @@ class VerificationGate:
                         problems.append(f"{kind}: {line[:120]}")
         return problems
 
-    def evaluate_finish(self, report: dict[str, Any], on_stop_commands: list[str] | None = None) -> dict[str, Any]:
-        """Validate a finish_task evidence report. Returns verdict for the model."""
+    def evaluate_finish(self, report: dict[str, Any], on_stop_commands: list[str] | None = None,
+                        artifact_checks: list[EvidenceCheck] | None = None) -> dict[str, Any]:
+        """Validate a finish_task evidence report. Returns verdict for the model.
+
+        ``artifact_checks`` comes from :meth:`check_artifacts` (run by the
+        session, which owns the workspace): verified deliverables count as
+        hard evidence for non-code tasks (document/data generation)."""
         problems: list[str] = []
         claims = report.get("commands") or []
         hook_results = report.get("verification_runs") or []
+        artifacts = report.get("artifacts") or []
+        artifact_checks = list(artifact_checks or [])
         checks = self._check_claimed_commands(claims)
         problems.extend(c.message for c in checks if not c.ok)
+        problems.extend(c.message for c in artifact_checks if not c.ok)
 
         # At least one piece of hard evidence is required: executed commands
-        # (verified against the log) or on_stop verification runs - unless every
-        # criterion is honestly reported as not_verified/skipped with a reason.
-        if not claims and not hook_results:
+        # (verified against the log), on_stop verification runs, or verified
+        # generated artifacts - unless every criterion is honestly reported as
+        # not_verified/skipped with a reason.
+        has_artifact_evidence = bool(artifacts) and bool(artifact_checks) and all(c.ok for c in artifact_checks)
+        if not claims and not hook_results and not has_artifact_evidence:
             all_honest = bool(report.get("acceptance_criteria")) and all(
                 str(c.get("status")) in ("not_verified", "skipped") and c.get("evidence")
                 for c in report.get("acceptance_criteria") or []
             )
             if not all_honest:
                 problems.append(
-                    "no evidence: finish_task must cite commands that actually ran (with run_id and exit codes) "
-                    "or report every criterion as 'not_verified' with a reason"
+                    "no evidence: finish_task must cite commands that actually ran (with run_id and exit codes), "
+                    "generated artifacts that verify on disk, or report every criterion as 'not_verified' with a reason"
                 )
 
         criteria = report.get("acceptance_criteria") or []
@@ -220,6 +276,7 @@ class VerificationGate:
             checks = self._check_claimed_commands([hr])
             problems.extend(c.message for c in checks if not c.ok)
 
+        all_checks = checks + artifact_checks
         if problems:
             self.state.status = "refused"
             verdict = {
@@ -229,11 +286,13 @@ class VerificationGate:
                     why="\n- ".join([""] + problems),
                     how_to_fix=(
                         "run the verification commands (tests/lint/type-check) via shell_exec, fix failures, "
-                        "and call finish_task again with evidence that matches the execution log. "
-                        "If a criterion cannot be verified report it as 'not_verified' with the reason."
+                        "and call finish_task again with evidence that matches the execution log. For generated "
+                        "documents/data, list them under 'artifacts' so the harness verifies them on disk, and "
+                        "confirm they read back with doc_read. If a criterion cannot be verified report it as "
+                        "'not_verified' with the reason."
                     ),
                 ).to_dict(),
-                "checks": [{"ok": c.ok, "message": c.message} for c in checks],
+                "checks": [{"ok": c.ok, "message": c.message} for c in all_checks],
             }
             log.warning("finish refused", extra={"data": {"problems": problems[:5]}})
             return verdict
@@ -244,7 +303,7 @@ class VerificationGate:
             "finished": True,
             "summary": report.get("summary", ""),
             "accepted_at": utc_iso(),
-            "checks": [{"ok": c.ok, "message": c.message} for c in checks],
+            "checks": [{"ok": c.ok, "message": c.message} for c in all_checks],
         }
 
     def status(self) -> dict[str, Any]:
