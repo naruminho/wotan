@@ -61,7 +61,7 @@ async def test_sdk_extract_json(sdk_config):
         model="fictional/mock-chat",
     )
     assert "entities" in result
-    names = {e["name"] for e in result["entities"]}
+    names = {e["text"] for e in result["entities"]}
     assert "Maria Silva" in names
 
 

@@ -673,6 +673,110 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
         finally:
             hb.cancel()
 
+    # ---------------------------------------------------- gateway proxy (browser -> configured gateway)
+    from . import gateway_client as gwsdk
+    from .llm_errors import LLMError
+
+    @app.post("/gw/chat")
+    async def gw_chat(request: Request) -> JSONResponse:
+        body = await request.json()
+        try:
+            gwsdk.init(workspace=str(ws))
+            try:
+                answer = await gwsdk.chat(
+                    str(body.get("prompt", "")), model=str(body.get("model", "")), system=str(body.get("system", "") or "")
+                )
+                return JSONResponse({"answer": answer})
+            finally:
+                await gwsdk.aclose()
+        except LLMError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    @app.post("/gw/chat_image")
+    async def gw_chat_image(request: Request) -> JSONResponse:
+        body = await request.json()
+        try:
+            import base64
+            import tempfile
+
+            data = base64.b64decode(str(body.get("image_b64", "")))
+            with tempfile.TemporaryDirectory(prefix="wotan-gw-") as td:
+                img = Path(td) / "image.png"
+                img.write_bytes(data)
+                gwsdk.init(workspace=str(ws))
+                try:
+                    answer = await gwsdk.chat_with_image(
+                        str(body.get("prompt", "")), img, model=str(body.get("model", ""))
+                    )
+                finally:
+                    await gwsdk.aclose()
+            return JSONResponse({"answer": answer})
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    @app.post("/gw/chat_document")
+    async def gw_chat_document(request: Request) -> JSONResponse:
+        body = await request.json()
+        try:
+            import base64
+            import tempfile
+
+            data = base64.b64decode(str(body.get("document_b64", "")))
+            with tempfile.TemporaryDirectory(prefix="wotan-gw-") as td:
+                doc = Path(td) / str(body.get("filename") or "document.pdf")
+                doc.write_bytes(data)
+                gwsdk.init(workspace=str(ws))
+                try:
+                    answer = await gwsdk.chat_with_document(
+                        str(body.get("prompt", "")), doc, model=str(body.get("model", ""))
+                    )
+                finally:
+                    await gwsdk.aclose()
+            return JSONResponse({"answer": answer})
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    @app.post("/gw/extract_json")
+    async def gw_extract_json(request: Request) -> JSONResponse:
+        body = await request.json()
+        try:
+            gwsdk.init(workspace=str(ws))
+            try:
+                data = await gwsdk.extract_json(
+                    str(body.get("prompt", "")), schema=body.get("schema"), model=str(body.get("model", ""))
+                )
+                return JSONResponse({"data": data})
+            finally:
+                await gwsdk.aclose()
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    @app.post("/gw/workflow")
+    async def gw_workflow(request: Request) -> JSONResponse:
+        body = await request.json()
+        try:
+            gwsdk.init(workspace=str(ws))
+            try:
+                out = await gwsdk.run_workflow(str(body.get("name", "")), body.get("inputs") or {})
+                return JSONResponse({"output": out})
+            finally:
+                await gwsdk.aclose()
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    @app.get("/gw/models")
+    async def gw_models(model_ref: str = "") -> JSONResponse:
+        try:
+            gwsdk.init(workspace=str(ws))
+            try:
+                return JSONResponse({"models": await gwsdk.list_models_remote(model_ref)})
+            finally:
+                await gwsdk.aclose()
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=502)
+
     # -------------------------------------------------------------- static UI
     if STATIC_DIR.is_dir():
         app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets") if (STATIC_DIR / "assets").is_dir() else None
@@ -699,6 +803,3 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
             return FileResponse(ASSETS_DIR / "logo.svg")
 
     return app
-
-
-app_requests: list[Any] = []  # unused shim kept out of the way

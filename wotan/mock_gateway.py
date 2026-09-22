@@ -14,11 +14,11 @@ GET  /mock/api/models            - model catalog (auto-discovery)
 GET  /mock/api/workflows         - workflow catalog (auto-discovery)
 POST /mock/api/workflows/{name}  - external workflow execution
 
-Behavior is driven by the prompt text (deterministic for tests):
+Behavior is driven by the prompt text (deterministic, case-insensitive):
   "HTTP401"   -> 401 (expired/invalid token simulation)
   "HTTP500"   -> 500 error body in the fictional error field
   "CALL_TOOL" -> response contains an action (tool call)
-  "ENTITIES"  -> JSON entity list (used by the example experiment)
+  "ENTITIES"  -> JSON entity list {text, type} (used by the example experiment)
   "STREAM"    -> streaming-friendly text
   otherwise   -> echo with a fictional wrapper
 """
@@ -104,17 +104,30 @@ def _extract_prompt(payload: dict[str, Any]) -> str:
 
 
 def _respond_for(prompt: str, model_id: str) -> dict[str, Any]:
-    if "HTTP401" in prompt:
+    upper = prompt.upper()
+    if "HTTP401" in upper:
         return {"_status": 401, "err": {"code": "unauthorized", "msg": "token expired"}}
-    if "HTTP500" in prompt:
+    if "HTTP500" in upper:
         return {"_status": 500, "err": {"code": "internal", "msg": "simulated backend failure"}}
-    if "ENTITIES" in prompt:
+    if "ENTIT" in upper:
         # Deterministic entity extraction over the provided text (example experiment).
-        text = prompt.split("ENTITIES", 1)[1]
+        # Emits {text, type} objects with type in person/organization/location/money/other.
+        marker_at = upper.find("ENTIT")
+        text = prompt[marker_at + len("ENTIT") :]
         entities = []
-        for name in ("Acme Corp", "Maria Silva", "Lisbon", "Contract", "Wotan"):
+        for name, kind in (
+            ("Maria Silva", "person"),
+            ("Joao Almeida", "person"),
+            ("Acme Corp", "organization"),
+            ("Beta Ltd", "organization"),
+            ("Lisbon", "location"),
+        ):
             if name.lower() in text.lower():
-                entities.append({"name": name, "type": "ORG" if "Corp" in name or name == "Contract" else ("PERSON" if "Maria" in name else "LOC" if name == "Lisbon" else "PRODUCT")})
+                entities.append({"text": name, "type": kind})
+        import re as _re
+
+        for match in _re.finditer(r"(?:EUR|USD|GBP)\s*[\d.,]+", text, _re.IGNORECASE):
+            entities.append({"text": match.group(0), "type": "money"})
         output = json.dumps({"entities": entities}, ensure_ascii=False)
         return {
             "prediction": {"output_text": output, "actions": [], "finish": "stop"},

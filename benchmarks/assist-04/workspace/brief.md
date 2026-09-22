@@ -1,0 +1,1 @@
+New microservice: pallet-tracker. Tracks pallets between lanes.

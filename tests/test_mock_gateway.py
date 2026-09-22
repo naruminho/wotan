@@ -105,7 +105,7 @@ async def test_entities_response(mock_server):
                          json={"instances": [{"input_text": "ENTITIES Maria Silva works at Acme Corp in Lisbon"}]},
                          headers={"Authorization": h})
     out = json.loads(r.json()["prediction"]["output_text"])
-    names = {e["name"] for e in out["entities"]}
+    names = {e["text"] for e in out["entities"]}
     assert {"Maria Silva", "Acme Corp", "Lisbon"} <= names
 
 

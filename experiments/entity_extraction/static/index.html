@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Entity extraction</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-top: 16px; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Entity extraction</h1>
+  <p>Upload a text/PDF file - entities are extracted through the configured gateway.</p>
+  <div class="card">
+    <input id="file" type="file" />
+    <p><button id="go">Extract</button></p>
+  </div>
+  <div class="card" id="result" hidden>
+    <table id="tbl"><tr><th>Entity</th><th>Type</th></tr></table>
+  </div>
+  <script>
+    document.getElementById("go").onclick = async () => {
+      const f = document.getElementById("file").files[0];
+      if (!f) { alert("Choose a file first"); return; }
+      const fd = new FormData();
+      fd.append("file", f);
+      const res = await fetch("/api/extract", { method: "POST", body: fd });
+      const body = await res.json();
+      document.getElementById("result").hidden = false;
+      const tbl = document.getElementById("tbl");
+      tbl.innerHTML = "<tr><th>Entity</th><th>Type</th></tr>";
+      if (!body.ok) {
+        tbl.innerHTML += `<tr><td colspan="2">ERROR: ${body.error}</td></tr>`;
+        return;
+      }
+      for (const e of body.entities) {
+        tbl.innerHTML += `<tr><td>${e.text}</td><td>${e.type}</td></tr>`;
+      }
+    };
+  </script>
+</body>
+</html>
