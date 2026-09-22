@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 PALETTES = {
+    "slate": ["#37424E", "#5B6B7A", "#8494A3", "#A8B4BF", "#6E7F8D", "#4A5A6A", "#93A1AD", "#B0885A"],
     "blue": ["#1F3A5F", "#2E6DA4", "#5CB85C", "#F0AD4E", "#D9534F", "#7B68AE", "#17A2B8", "#8C564B"],
     "green": ["#1E6B45", "#3E9B6F", "#83C69A", "#F0AD4E", "#D9534F", "#5B8BC2", "#7B6CA8", "#8C6D4B"],
     "warm": ["#8C4A2F", "#C97B3D", "#E3B23C", "#7B8D42", "#4E7A6A", "#94516B", "#5B5B8C", "#8C6D4B"],

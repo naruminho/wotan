@@ -34,8 +34,12 @@ endpoint.
   cp1252, CRLF/LF), mojibake repair, correct diacritics, emoji-free output.
 - **Artifact generation** (assistant work): real PDF/Word/Excel/PowerPoint/CSV
   from markdown-lite or data, seeded synthetic datasets (Faker, pt-BR, valid
-  CPF/CNPJ), PNG charts (Pillow, no plotting stack), image transforms, and
-  real satellite imagery for lat/lon (config-guarded tile provider). Every
+  CPF/CNPJ), PNG charts (Pillow, no plotting stack), image transforms,
+  LLM-generated imagery via the configured multimodal gateway (`img_llm`,
+  with auto photorealism/anti-neon prompt directives), sober curated deck
+  themes (KPI cards, tables, timelines, no glossy AI style), synthetic
+  scanned/photographed documents for OCR fixtures (seeded, deterministic),
+  and satellite tile mosaics as fallback (config-guarded provider). Every
   artifact is read back and verified (`doc_read`) and cited in `finish_task`
   as on-disk evidence. Optional extra: `pip install -e ".[artifacts]"`.
 - **Verification harness** (critical): acceptance criteria before work starts,

@@ -54,3 +54,20 @@ com número ordinal (`Cláusula 1ª`).
 `doc_read` em cada arquivo gerado + citação em `artifacts: [...]`.
 Confira: acentos corretos, tabelas completas, imagens presentes (o PDF
 mostra `[image not found: ...]` quando falta), disclaimer incluído.
+
+## Imagens no deck (pessoas e infograficos)
+
+- Pessoas/equipes: gere com `img_llm` pedindo fotografia realista (a tool ja
+  reforca: luz natural, textura de pele real, look 85mm). Nunca use clipart.
+- Infograficos/esquemas: `img_llm` com "design editorial minimalista, paleta
+  dessaturada, linhas finas" (auto-reforcado). NUNCA peca neon/gradiente.
+- Graficos de dados: sempre `data_chart` (paleta `slate` combina com todos
+  os temas do deck) embutidos no layout `chart`.
+
+## Fixtures de OCR (documento escaneado sintetico)
+
+`doc_scan_image` / `doc_scan_pdf` geram imagens/PDFs "escaneados" com campos
+preenchidos a mao, checkboxes, assinatura e carimbo - deterministicos por
+`seed` (mesma seed = mesma imagem, ideal p/ conjuntos de teste). Modos:
+`scan`, `photo` (perspectiva de celular), `photocopy` (P&B duro). Combine com
+`data_synthetic` para variar nomes/CPF entre fixtures.

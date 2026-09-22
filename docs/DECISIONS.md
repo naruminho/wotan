@@ -158,3 +158,29 @@ frontend/ (React + TypeScript + Vite)
    (`providers/http_retry.py`); (b) the session retries retryable LLM errors
    per step (`limits.llm_step_retries`, default 2) with visible warnings and
    cancels cleanly on stop; (c) non-retryable errors fail once, fast.
+10. **Synthetic scans are seeded pipelines, not random filters**
+    (`artifacts/scandoc.py`): a clean render pass (markdown-lite and/or a
+    structured form spec with handwriting-look field values, checkboxes, a
+    seed-generated signature squiggle and a rotated muted stamp) followed by a
+    deterministic degradation chain (paper tint, rotation, perspective skew +
+    vignette in photo mode, seeded sensor noise, blur, JPEG re-compression).
+    `Image.effect_noise` is avoided because its RNG is unseedable - noise is
+    drawn from the seeded `random.Random` (half-resolution + upscale).
+    Output: PNG/JPG per page or an image-backed PDF (`doc_scan_image` /
+    `doc_scan_pdf`) - exactly what OCR pipelines ingest.
+11. **Images come from the multimodal gateway, not from image banks**
+    (`img_llm` -> `artifacts.image_generation.{provider_id, model}`): the
+    session reuses the provider's TokenManager auth and posts to the
+    OpenAI-compatible `/images/generations` contract (several response shapes
+    accepted). Prompt guidance auto-appends photorealism directives for people
+    (natural light, real skin texture, 85mm look - explicitly anti
+    blurry-AI-people) and sober minimal-editorial directives for
+    diagrams/infographics (desaturated palette, whitespace, thin lines -
+    explicitly anti neon-AI style). `img_satellite` (tile mosaic) remains as
+    the configured-provider fallback for aerial imagery.
+12. **Deck design is curated, data-driven** (`artifacts/pptx.py`): muted
+    themes (executive/nordic/editorial/graphite/terra), thin accent rules,
+    dash bullets, footer + page numbers, and rich layouts (agenda, KPI cards,
+    native table, timeline, chart, image with caption, takeaway lines) built
+    shape-by-shape so any engine renders them - no template-name dependency,
+    no gradients, no glossy fills.

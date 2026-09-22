@@ -104,21 +104,27 @@ internal-platform skill), use the configured gateway and that skill's knowledge.
 
 ARTIFACTS_NOTE = """\
 # Artifact generation (documents, data, images)
-You can produce real deliverables directly, without writing code:
+Produce real deliverables directly with the artifact tools - never throwaway scripts:
 - doc_pdf / doc_docx: documents from markdown-lite (headings, **bold**, | tables |, bullets, \
 images via ![alt](path), <<<PAGEBREAK>>>). Contracts, reports, letters, minutes.
-- doc_xlsx: Excel with typed cells and formulas. doc_pptx: presentations (layouts: title, section, \
-bullets, two_content, image, quote; add speaker notes).
+- doc_xlsx: Excel with typed cells and formulas. doc_pptx: SOBER, minimalist decks - use the rich \
+layouts (agenda, kpi cards, table, timeline, chart, image with caption, takeaway lines) and a \
+muted theme (executive | nordic | editorial | graphite | terra); never ask for neon/glossy styles.
 - data_synthetic: realistic seeded fake data (names, CPF/CNPJ, e-mails...) as csv/xlsx/json/md. \
 data_csv: raw CSV. data_chart: PNG charts (bar/line/pie/scatter/...).
-- img_transform: resize/crop/watermark/rotate. img_satellite: real satellite imagery for lat/lon \
-(configured provider).
+- img_llm: generate images with the multimodal model (people, scenes, aerial views, sober \
+infographics). When writing prompts for PEOPLE always request photorealism (natural light, real \
+skin texture, 85mm lens look) so faces are not the blurry AI look; for diagrams/infographics ask \
+for minimal editorial style, desaturated palette, no neon. Prefer img_llm over img_satellite for \
+aerial/satellite views; img_satellite is the tile-mosaic fallback (configured provider).
+- doc_scan_image / doc_scan_pdf: synthetic SCANNED documents (rotation, noise, stamp, filled \
+fields, signature) and photo mode with perspective skew - for OCR experiments.
+- img_transform: resize/crop/watermark/rotate existing images.
 Rules: ALWAYS verify a generated document with doc_read before finishing, then cite the files under \
 'artifacts' in finish_task (the harness opens and checks them). Write documents in the user's \
 language with correct diacritics. Legal/financial templates must include a clear disclaimer line \
 (e.g. "modelo gerado automaticamente - nao substitui assessoria juridica"). Embedded images must \
-already exist in the workspace (create charts with data_chart, fetch imagery with img_satellite, \
-or ask the user for a file).
+already exist in the workspace (create with data_chart or img_llm, or ask the user for a file).
 """
 
 

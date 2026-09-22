@@ -193,7 +193,8 @@ async def _doc_pptx(ctx, args: dict[str, Any]) -> Any:  # noqa: ANN001
             title=str(args.get("title") or ""),
             author=str(args.get("author") or ""),
             aspect=str(args.get("aspect") or "16:9"),
-            palette=str(args.get("palette") or "blue"),
+            theme=str(args.get("theme") or "executive"),
+            footer_title=str(args.get("footer_title") or ""),
         )
     except ModuleNotFoundError as exc:
         return _require_mod(exc)
@@ -453,4 +454,104 @@ async def _img_satellite(ctx, args: dict[str, Any]) -> Any:  # noqa: ANN001
         return _err(f"invalid request: {exc}", "lat/lon/zoom out of range", "lat in [-85, 85], lon in [-180, 180], zoom 1-21, tiles 1-3")
     except ConnectionError as exc:
         return _err(str(exc), "the tile provider is unreachable", "check the network / provider URL, lower tiles, or ask the user for a local image to embed")
+    return _ok(path=str(dest.relative_to(ctx.workspace)).replace("\\", "/"), **meta)
+
+
+# ---------------------------------------------------------------------------
+# LLM-generated images (multimodal gateway) + scanned-document simulation
+# ---------------------------------------------------------------------------
+
+async def _img_llm(ctx, args: dict[str, Any]) -> Any:  # noqa: ANN001
+    prompt = str(args.get("prompt") or "").strip()
+    path = str(args.get("path") or "").strip()
+    if not prompt or not path:
+        return _err("prompt and path are required", "nothing to generate",
+                    "example: {prompt: 'foto aerea do lote em dia ensolarado', path: 'terreno/aerea.png'}")
+    dest, perr = _resolve_safe(ctx, path)
+    if perr is not None:
+        return perr
+    if dest.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        dest = dest.with_suffix(".png")
+    generate = getattr(ctx, "extra", {}).get("imagegen") if isinstance(getattr(ctx, "extra", None), dict) else None
+    if generate is None:
+        return _err("image generation is not available in this context", "no imagegen callable attached",
+                    "run inside an agent session with artifacts.image_generation configured")
+    try:
+        meta = await generate(prompt, dest, args)
+    except (ValueError, ConnectionError) as exc:
+        return _err(f"image generation failed: {exc}", "the gateway call or the response format failed",
+                    "check artifacts.image_generation in config.yaml (provider/model/endpoint) and run 'wotan doctor'")
+    except Exception as exc:
+        return _err(f"image generation crashed: {type(exc).__name__}: {exc}", "unexpected error",
+                    "check the gateway endpoint; see read_app_logs for the full trace")
+    probe = sniff_header(dest)
+    if probe != "ok":
+        return _err(f"generated file failed verification: {probe}", "corrupt image", "retry the generation")
+    return _ok(path=str(dest.relative_to(ctx.workspace)).replace("\\", "/"), **meta)
+
+
+async def _doc_scan_image(ctx, args: dict[str, Any]) -> Any:  # noqa: ANN001
+    path = str(args.get("path") or "").strip()
+    content = args.get("content_md") or args.get("content") or ""
+    form = args.get("form") or None
+    if not path or (not str(content).strip() and not form):
+        return _err("path and (content_md or form) are required", "nothing to render",
+                    "pass the document markdown-lite and/or a form spec {fields, checkboxes, signature, stamp_text}")
+    dest, perr = _resolve_safe(ctx, path)
+    if perr is not None:
+        return perr
+    if dest.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        dest = dest.with_suffix(".png")
+    try:
+        from ..artifacts.scandoc import render_scanned_image
+    except ModuleNotFoundError as exc:
+        return _require_mod(exc)
+    try:
+        meta = render_scanned_image(
+            dest, str(content), form=form,
+            mode=str(args.get("mode") or "scan"), seed=int(args.get("seed", 7)),
+            dpi=int(args.get("dpi", 150)),
+        )
+    except (ValueError, TypeError) as exc:
+        return _err(f"invalid scan spec: {exc}", "mode must be scan | photo | photocopy; form needs fields/checkboxes/signature/stamp_text",
+                    "example: {mode: 'scan', form: {fields: [{label: 'Nome', value: 'Maria'}], signature: true, stamp_text: 'RECEBIDO | SETOR 2'}}")
+    except Exception as exc:
+        return _err(f"scan simulation failed: {type(exc).__name__}: {exc}", "renderer error", "simplify the content and retry")
+    probe = sniff_header(dest)
+    if probe != "ok":
+        return _err(f"generated file failed verification: {probe}", "corrupt image", "retry")
+    return _ok(path=str(dest.relative_to(ctx.workspace)).replace("\\", "/"), **meta)
+
+
+async def _doc_scan_pdf(ctx, args: dict[str, Any]) -> Any:  # noqa: ANN001
+    path = str(args.get("path") or "").strip()
+    content = args.get("content_md") or args.get("content") or ""
+    form = args.get("form") or None
+    form_pages = args.get("form_pages") or None
+    if not path or (not str(content).strip() and not form and not form_pages):
+        return _err("path and content are required", "nothing to render",
+                    "pass content_md (use <<<PAGEBREAK>>> between pages) and/or form / form_pages")
+    dest, perr = _resolve_safe(ctx, path)
+    if perr is not None:
+        return perr
+    if dest.suffix.lower() != ".pdf":
+        dest = dest.with_suffix(".pdf")
+    try:
+        from ..artifacts.scandoc import write_scanned_pdf
+    except ModuleNotFoundError as exc:
+        return _require_mod(exc)
+    try:
+        meta = write_scanned_pdf(
+            dest, str(content), form=form, form_pages=form_pages,
+            mode=str(args.get("mode") or "scan"), seed=int(args.get("seed", 7)),
+            dpi=int(args.get("dpi", 150)), title=str(args.get("title") or ""),
+        )
+    except (ValueError, TypeError) as exc:
+        return _err(f"invalid scan spec: {exc}", "form_pages is a list of {content_md?, fields?, checkboxes?, signature?, stamp_text?}",
+                    "example: form_pages=[{content_md: '...'}, {fields: [{label: 'Setor', value: '2'}]}]")
+    except Exception as exc:
+        return _err(f"scan PDF failed: {type(exc).__name__}: {exc}", "renderer error", "simplify the content and retry")
+    probe = sniff_header(dest)
+    if probe != "ok":
+        return _err(f"generated file failed verification: {probe}", "corrupt PDF", "retry")
     return _ok(path=str(dest.relative_to(ctx.workspace)).replace("\\", "/"), **meta)

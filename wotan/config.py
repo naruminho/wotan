@@ -190,12 +190,30 @@ class SatelliteConfig:
 
 
 @dataclass
+class ImageGenerationConfig:
+    """LLM image generation (img_llm) via the configured gateway.
+
+    ``provider_id`` selects a provider from the providers list (its auth/base
+    URL are reused). ``endpoint`` overrides the default
+    ``{base_url}/images/generations`` (full URL or path)."""
+
+    provider_id: str = ""
+    model: str = ""
+    api: str = "openai_images"  # openai_images | auto
+    endpoint: str = ""
+    size: str = "1024x1024"
+    timeout_seconds: float = 120.0
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ArtifactsConfig:
     """Document/data/image generation (doc_pdf, data_synthetic, ...)."""
 
     enabled: bool = True
     max_file_mb: float = 50.0
     satellite: SatelliteConfig = field(default_factory=SatelliteConfig)
+    image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
 
 
 @dataclass
@@ -388,8 +406,10 @@ def parse_config(data: dict[str, Any], source: str = "") -> AppConfig:
     cfg.limits = _build(LimitsConfig, data.get("limits"))
     artifacts_raw = dict(data.get("artifacts") or {})
     satellite_cfg = _build(SatelliteConfig, artifacts_raw.get("satellite"))
-    cfg.artifacts = _build(ArtifactsConfig, {k: v for k, v in artifacts_raw.items() if k != "satellite"})
+    imagegen_cfg = _build(ImageGenerationConfig, artifacts_raw.get("image_generation"))
+    cfg.artifacts = _build(ArtifactsConfig, {k: v for k, v in artifacts_raw.items() if k not in ("satellite", "image_generation")})
     cfg.artifacts.satellite = satellite_cfg
+    cfg.artifacts.image_generation = imagegen_cfg
     cfg.search = _build(SearchConfig, data.get("search"))
     cfg.web = _build(WebFetchConfig, data.get("web"))
     hooks_raw = data.get("hooks") or {}

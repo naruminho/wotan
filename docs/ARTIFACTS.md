@@ -31,7 +31,9 @@ instalacao - nunca quebram o turno.
 | `data_synthetic` | Dados sinteticos REALISTAS com seed deterministica: nome, e-mail, CPF/CNPJ com digito verificador valido, telefone, CEP, endereco, datas, money, categorias (Faker, locale pt_BR) |
 | `data_chart` | Graficos PNG: `bar`, `hbar`, `line`, `area`, `pie`, `donut`, `scatter`, `histogram` (desenhados com Pillow, offline, paletas prontas) |
 | `img_transform` | Cadeia de ops em imagens: resize, crop, rotate, grayscale, flip, brightness, contrast, watermark, border |
-| `img_satellite` | Imagem de satelite REAL de um lat/lon (mosaico de tiles; provider configurado em `artifacts.satellite`, com allow-list de host) |
+| `img_llm` | **Geracao de imagens pelo modelo multimodal do gateway** (`artifacts.image_generation`): pessoas realistas (diretrizes anti-embaraco automaticas no prompt), cenarios, vistas aereas e infograficos minimalistas (diretrizes anti-neon automaticas) |
+| `img_satellite` | Fallback: mosaico de tiles de satelite reais de um lat/lon (provider configurado em `artifacts.satellite`, allow-list de host) |
+| `doc_scan_image` / `doc_scan_pdf` | **Documento sintetico "escaneado/fotografado"** p/ experimentos de OCR: rotacao, ruido, sombra, perspectiva de foto, carimbo, campos preenchidos a mao, assinatura, JPEG re-comprimido; deterministico por `seed` |
 
 ## Exemplo: contrato de venda de terreno com foto de satelite
 
@@ -42,10 +44,10 @@ Pedidos que o agente resolve de uma vez:
 
 Fluxo que o agente executa:
 
-1. `img_satellite {lat, lon, zoom: 18, path: "terreno/satelite.jpg"}` - busca
-   a imagem real (requer `artifacts.satellite.base_url` no config; ver
-   `config.example.yaml`). Sem rede/provider, ele avisa e segue com imagem
-   local ou planta desenhada com `data_chart`.
+1. Imagem aerea: `img_llm` com prompt fotografico (padrao recomendado; requer
+   `artifacts.image_generation` no config) ou `img_satellite` com tiles reais
+   (`artifacts.satellite.base_url`). Sem rede/provider, o agente avisa e segue
+   com imagem local ou planta desenhada com `data_chart`.
 2. Planilha de parcelas com `doc_xlsx` (total via `=SUM(...)`).
 3. `doc_pdf` com o contrato em markdown-lite, embutindo `![foto aerea](terreno/satelite.jpg)`
    e a tabela de valores; Disclaimer: modelo gerado automaticamente, nao
@@ -73,6 +75,47 @@ Paragrafo com **negrito**, *italico*, `codigo` e [link](https://exemplo.br).
 
 <<<PAGEBREAK>>>
 ```
+
+## PPTX rico e SOBRE (sem cara de IA)
+
+`doc_pptx` tem layouts de verdade e temas curados (`theme`: executive,
+nordic, editorial, graphite, terra - todos de cores dessaturadas, linhas
+finas e muito espaco em branco; nada de neon/gradiente/brilho 3D):
+
+- `agenda` (pauta numerada em 2 colunas), `section` (divisoria com numero)
+- `bullets` (+`image_path` p/ foto a direita, +`takeaway` p/ conclusao italica)
+- `kpi` (cartoes [{value, label}] com numero grande), `table` (tabela nativa
+  com header no accent e zebrinha discreta), `timeline` (marcos com sublabels)
+- `chart` (imagem de grafico + takeaway), `image` (full-bleed com legenda ou
+  titulada), `quote`, `two_content`, `title`
+- rodape com nome do deck + numero de pagina automaticos; notas do apresentador
+
+Pessoas nas imagens: gere com `img_llm` - a tool acrescenta diretrizes
+fotograficas ao prompt (luz natural, textura de pele real, look 85mm) para
+evitar o efeito "pessoas embaracadas de IA". Infograficos/esquemas: tambem
+via `img_llm`, com diretrizes automaticas de estilo editorial minimalista
+(paleta dessaturada, sem neon, sem brilho).
+
+## Documento escaneado sintetico (fixtures de OCR)
+
+```json
+{
+  "path": "ocr/requerimento_scan.png",
+  "content_md": "# REQUERIMENTO\n\nEu, **MARIA SOUZA**...\n\n- [x] Termo aceito\n- [ ] Anexo",
+  "form": {
+    "fields": [{"label": "Telefone", "value": "(11) 91234-5678"}],
+    "checkboxes": [{"label": "Dados conferidos", "checked": true}],
+    "signature": true,
+    "stamp_text": "RECEBIDO EM 12/09/2026 | PROTOCOLO 3487"
+  },
+  "mode": "scan", "seed": 42
+}
+```
+
+`mode`: `scan` (rotação leve, sombra, ruído, JPEG), `photo` (perspectiva de
+celular + vinheta + mais ruído/blur), `photocopy` (P&B duro). Multi-página:
+`doc_scan_pdf` com `form_pages` ou `<<<PAGEBREAK>>>`. Mesma seed => mesma
+imagem (bases de teste reprodutíveis).
 
 ## Dados sinteticos (deterministicos)
 

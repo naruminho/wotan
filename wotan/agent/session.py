@@ -244,7 +244,40 @@ class AgentSession:
             todo_sink=self._set_todos,
         )
         ctx.extra["artifacts_config"] = getattr(self.config, "artifacts", None)
+        ctx.extra["imagegen"] = self._generate_image
         return ctx
+
+    async def _generate_image(self, prompt: str, dest, args: dict[str, Any]) -> dict[str, Any]:
+        """Generate an image through the CONFIGURED gateway (img_llm tool)."""
+        from ..artifacts.llm_image import generate_image as gateway_generate
+
+        ig = getattr(self.config.artifacts, "image_generation", None) if hasattr(self.config, "artifacts") else None
+        if ig is None or not getattr(ig, "provider_id", ""):
+            raise ValueError(
+                "no image-generation provider configured: add artifacts.image_generation "
+                "{provider_id, model} to config.yaml (the provider must expose an "
+                "OpenAI-compatible /images/generations endpoint)"
+            )
+        pc = self.config.find_provider(ig.provider_id)
+        if pc is None:
+            raise ValueError(f"artifacts.image_generation.provider_id {ig.provider_id!r} not found in providers")
+        provider = self.registry.get(pc.id)
+        headers: dict[str, str] = dict(pc.raw.get("headers") or {})
+        tokens = getattr(provider, "tokens", None)
+        if tokens is not None:
+            await tokens.apply_auth(headers)
+        endpoint = ig.endpoint or (pc.base_url or "")
+        return await gateway_generate(
+            dest,
+            prompt,
+            base_url=endpoint,
+            headers=headers,
+            model=ig.model or "",
+            size=str(args.get("size") or ig.size),
+            timeout=float(ig.timeout_seconds),
+            style_hint=str(args.get("style_hint", "")),
+            extra_body=dict(ig.extra_body or {}),
+        )
 
     # -- callbacks used by tools ----------------------------------------------
     async def _execute(self, command: str, kind: str = "bash", cwd: str = ".", timeout: float = 120, background: bool = False) -> ExecResult:

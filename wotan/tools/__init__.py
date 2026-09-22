@@ -776,7 +776,8 @@ def _register_artifact_tools(reg: ToolRegistry) -> None:
     """Document / data / image generation tools (optional libraries, graceful
     degradation when the 'artifacts' extra is not installed)."""
     from .artifact_tools import (_data_chart, _data_csv, _data_synthetic, _doc_docx, _doc_pdf,
-                                 _doc_pptx, _doc_read, _doc_xlsx, _img_satellite, _img_transform)
+                                 _doc_pptx, _doc_read, _doc_scan_image, _doc_scan_pdf, _doc_xlsx,
+                                 _img_llm, _img_satellite, _img_transform)
 
     reg.register(Tool(
         name="doc_pdf",
@@ -857,9 +858,12 @@ def _register_artifact_tools(reg: ToolRegistry) -> None:
     reg.register(Tool(
         name="doc_pptx",
         description=(
-            "Generate a PowerPoint .pptx deck. Slide layouts: title (title+subtitle), section, bullets "
-            "(with optional image_path), two_content (left/right), image, quote. Rich, consistent design; "
-            "speaker notes supported. Use for 'apresentacao' requests."
+            "Generate a BEAUTIFUL, sober PowerPoint .pptx deck (minimalist editorial design - never the "
+            "glossy neon AI style). Slide layouts: title, section, agenda, bullets (+optional image_path "
+            "and takeaway), two_content (left/right + titles), kpi (cards [{value, label}] + takeaway), "
+            "chart (chart image + takeaway), table (rows + col_widths), timeline (steps [{label, sub}]), "
+            "image (full-bleed or titled, with caption), quote. Curated themes: executive, nordic, "
+            "editorial, graphite, terra. Footer + page numbers automatic. Use for 'apresentacao' requests."
         ),
         parameters={
             "type": "object",
@@ -870,22 +874,31 @@ def _register_artifact_tools(reg: ToolRegistry) -> None:
                     "items": {
                         "type": "object",
                         "properties": {
-                            "layout": {"type": "string", "enum": ["title", "section", "bullets", "two_content", "image", "quote"]},
+                            "layout": {"type": "string", "enum": ["title", "section", "agenda", "bullets", "two_content", "kpi", "chart", "table", "timeline", "image", "quote"]},
+                            "kicker": {"type": "string", "description": "small uppercase label above the title (eyebrow)"},
                             "title": {"type": "string"},
                             "subtitle": {"type": "string"},
-                            "bullets": {"type": "array", "items": {"type": "string"}},
-                            "left": {"type": "array", "items": {"type": "string"}},
-                            "right": {"type": "array", "items": {"type": "string"}},
-                            "image_path": {"type": "string", "description": "workspace-relative image"},
+                            "bullets": {"type": "array", "items": {"type": "string"}, "description": "'> ' prefix = sub-bullet"},
+                            "takeaway": {"type": "string", "description": "one-line italic conclusion at the bottom"},
+                            "left": {"type": "array", "items": {"type": "string"}}, "left_title": {"type": "string"},
+                            "right": {"type": "array", "items": {"type": "string"}}, "right_title": {"type": "string"},
+                            "cards": {"type": "array", "description": "kpi: [{value: 'R$ 42M', label: 'Receita (+18%)'}] (max 4)", "items": {"type": "object", "properties": {"value": {"type": "string"}, "label": {"type": "string"}}}},
+                            "rows": {"type": "array", "items": {"type": "array"}, "description": "table: first row = header"},
+                            "col_widths": {"type": "array", "items": {"type": "number"}},
+                            "steps": {"type": "array", "description": "timeline: [{label, sub}]", "items": {"type": "object", "properties": {"label": {"type": "string"}, "sub": {"type": "string"}}}},
+                            "image_path": {"type": "string", "description": "workspace-relative image (chart png, img_llm photo...)"},
+                            "caption": {"type": "string"},
                             "text": {"type": "string", "description": "quote text"},
-                            "author": {"type": "string", "description": "quote author"},
+                            "author": {"type": "string"},
                             "notes": {"type": "string", "description": "speaker notes"},
                         },
                         "required": ["layout"],
                     },
                 },
                 "aspect": {"type": "string", "enum": ["16:9", "4:3"]},
+                "theme": {"type": "string", "enum": ["executive", "nordic", "editorial", "graphite", "terra"], "description": "muted curated theme (default executive)"},
                 "title": {"type": "string", "description": "deck metadata title"},
+                "footer_title": {"type": "string", "description": "small footer text on content slides (e.g. deck name)"},
             },
             "required": ["path", "slides"],
         },
@@ -1021,11 +1034,93 @@ def _register_artifact_tools(reg: ToolRegistry) -> None:
         group="artifacts",
     ))
     reg.register(Tool(
+        name="img_llm",
+        description=(
+            "Generate an image with the configured multimodal model (artifacts.image_generation in "
+            "config.yaml). FOR PEOPLE: write detailed photographic prompts - 'fotografia realista, "
+            "luz natural, textura de pele real' - the tool adds anti-blur/anti-plastic directives "
+            "automatically. FOR infographics/diagrams: ask for 'design editorial minimalista, cores "
+            "dessaturadas, sem neon' (also auto-added). Prefer this over img_satellite for aerial views."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "detailed image prompt (be specific: scene, angle, light, mood)"},
+                "path": {"type": "string", "description": "destination .png/.jpg in the workspace"},
+                "size": {"type": "string", "description": "e.g. 1024x1024, 1536x1024 (provider-dependent)"},
+                "style_hint": {"type": "string", "description": "extra style directive appended to the prompt"},
+            },
+            "required": ["prompt", "path"],
+        },
+        handler=_img_llm,
+        aliases=("llm_image", "generate_image"),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_scan_image",
+        description=(
+            "Render a SYNTHETIC SCANNED/photographed document image for OCR experiments: markdown-lite "
+            "and/or a form spec (labeled fields with handwriting-look values, checkboxes, seed-generated "
+            "signature squiggle, rotated stamp), degraded like a real scan (rotation, paper tint, shadow "
+            "gradient, sensor noise, blur, JPEG artifacts) or a phone photo (perspective skew + vignette). "
+            "modes: scan | photo | photocopy. Deterministic under seed."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content_md": {"type": "string", "description": "markdown-lite document; '[x]'/'[ ]' at line/item start become checkboxes"},
+                "form": {
+                    "type": "object",
+                    "properties": {
+                        "fields": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}, "full": {"type": "boolean"}}}},
+                        "checkboxes": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "checked": {"type": "boolean"}}}},
+                        "signature": {"type": "boolean"},
+                        "stamp_text": {"type": "string", "description": "'LINE1 | LINE2' - rotated muted stamp"},
+                    },
+                },
+                "mode": {"type": "string", "enum": ["scan", "photo", "photocopy"]},
+                "seed": {"type": "integer"},
+                "dpi": {"type": "integer", "description": "default 150 (A4)"},
+            },
+            "required": ["path"],
+        },
+        handler=_doc_scan_image,
+        aliases=("scan_image", "ocr_fixture"),
+        group="artifacts",
+    ))
+    reg.register(Tool(
+        name="doc_scan_pdf",
+        description=(
+            "Multi-page scanned-style PDF (image-backed pages): content_md with <<<PAGEBREAK>>>, or "
+            "form_pages=[{content_md?, fields?, checkboxes?, signature?, stamp_text?}] - one degraded "
+            "page per entry. Use to build OCR test sets."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content_md": {"type": "string"},
+                "form": {"type": "object", "description": "form spec applied to page 1 (or merged into each form_pages entry)"},
+                "form_pages": {"type": "array", "items": {"type": "object"}},
+                "mode": {"type": "string", "enum": ["scan", "photo", "photocopy"]},
+                "seed": {"type": "integer"},
+                "dpi": {"type": "integer"},
+                "title": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+        handler=_doc_scan_pdf,
+        aliases=("scan_pdf",),
+        group="artifacts",
+    ))
+    reg.register(Tool(
         name="img_satellite",
         description=(
-            "Fetch a real satellite/aerial image around lat/lon as a tile mosaic (provider configured in "
-            "artifacts.satellite.base_url; host allow-list enforced). Use for land/property reports. "
-            "Attribution bar embedded. Falls back gracefully offline with a clear error."
+            "PREFERRED for aerial/satellite imagery: generate it with img_llm (the multimodal model). "
+            "This tool is the tile-mosaic fallback: fetches real tiles around lat/lon from the provider "
+            "configured in artifacts.satellite.base_url (host allow-list enforced, attribution embedded). "
+            "Clear error when no provider/network is available."
         ),
         parameters={
             "type": "object",
@@ -1053,4 +1148,5 @@ CORE_TOOL_NAMES = (
 ARTIFACT_TOOL_NAMES = (
     "doc_pdf", "doc_docx", "doc_xlsx", "doc_pptx", "doc_read",
     "data_csv", "data_synthetic", "data_chart", "img_transform", "img_satellite",
+    "img_llm", "doc_scan_image", "doc_scan_pdf",
 )
