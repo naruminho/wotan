@@ -142,6 +142,52 @@ providers:
         multimodal: true
         edit_format: str_replace     # str_replace | apply_patch | hashline
 
+  # OpenRouter (openrouter.ai) - one API key, hundreds of models. Ships as an
+  # UPDATE-PROOF plugin: copy examples/providers/custom_openrouter.py to
+  # %USERPROFILE%\.wotan\providers\ (or ~/.wotan/providers) once and wotan
+  # upgrades never touch it - same policy as corporate gateway adapters.
+  # Get a key at https://openrouter.ai/keys and set it in the environment
+  # (or in %USERPROFILE%\.wotan\.env): OPENROUTER_API_KEY=sk-or-...
+  # Model ids are 'vendor/model' - browse https://openrouter.ai/models
+  # (wotan doctor lists the live catalog and your key credits because the
+  # plugin exposes list_models/fetch_credits).
+  - id: openrouter
+    type: custom
+    plugin: custom_openrouter
+    name: OpenRouter
+    api_key: env:OPENROUTER_API_KEY
+    # base_url defaults to https://openrouter.ai/api/v1 - override only for
+    # proxies; attribution headers (HTTP-Referer / X-Title) are sent by
+    # default and can be overridden here:
+    # headers:
+    #   HTTP-Referer: https://myteam.example.com
+    #   X-Title: My Wotan
+    models:
+      - id: anthropic/claude-sonnet-4.5
+        name: Claude Sonnet 4.5
+        context_window: 200000
+        tools: true
+        streaming: true
+        multimodal: true
+      - id: openai/gpt-4.1-mini
+        name: GPT-4.1 mini
+        context_window: 128000
+        tools: true
+        streaming: true
+        multimodal: true
+      - id: google/gemini-2.5-flash
+        name: Gemini 2.5 Flash
+        context_window: 1000000
+        tools: true
+        streaming: true
+        multimodal: true
+      - id: meta-llama/llama-3.3-70b-instruct
+        name: Llama 3.3 70B Instruct
+        context_window: 128000
+        tools: true
+        streaming: true
+        weak: false
+
   - id: anthropic_demo
     type: anthropic
     name: Anthropic-compatible gateway

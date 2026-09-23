@@ -135,6 +135,36 @@ async def doctor_provider(cfg: AppConfig, provider_id: str, include_raw: bool = 
     except Exception as exc:
         report.add("tool_call", False, f"tool call test failed: {exc}")
 
+    # 3.5) OpenRouter extras: public model catalog + key credits -------------
+    fetch_credits = getattr(provider, "fetch_credits", None)
+    if fetch_credits is not None:  # OpenRouterProvider
+        list_models_url = (getattr(provider, "cfg", None) and provider.cfg.list_models.get("url")) or ""
+        if list_models_url:
+            try:
+                import httpx
+
+                client = await provider._get_client()
+                headers = await provider._request_headers()
+                resp = await client.get(list_models_url, headers=headers)
+                if resp.status_code < 400:
+                    models = [m.get("id", "") for m in (resp.json().get("data") or []) if m.get("id")]
+                    report.add("model_catalog", True, f"{len(models)} models available from {list_models_url}",
+                               {"sample": models[:8]})
+                else:
+                    report.add("model_catalog", False, f"HTTP {resp.status_code} from {list_models_url}")
+            except Exception as exc:
+                report.add("model_catalog", False, f"catalog fetch failed: {exc}")
+        try:
+            credits = await fetch_credits()
+            if credits.get("ok"):
+                report.add("credits", True,
+                           f"label={credits.get('label') or 'n/a'} usage={credits.get('usage')} "
+                           f"limit={credits.get('limit')} total_credits={credits.get('total_credits')}")
+            else:
+                report.add("credits", False, str(credits.get("error")))
+        except Exception as exc:
+            report.add("credits", False, f"credits check failed: {exc}")
+
     # 4) streaming ------------------------------------------------------------
     caps = provider.capabilities()
     if not caps.get("streaming"):
