@@ -159,6 +159,29 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
         is_drive_root = sys.platform.startswith("win") and len(str(p)) <= 3
         return {"path": str(p), "parent": "" if is_drive_root else parent, "dirs": entries}
 
+    # ------------------------------------------------- provider switcher (UI)
+    # Visual toggle between providers (e.g. OpenRouter vs a corporate gateway).
+    # Each provider keeps its OWN model memory in the db settings KV (global to
+    # this wotan install, survives restarts): the last model used with it is
+    # restored on switch, and models saved from the UI are merged into the
+    # picker without touching config.yaml.
+    def _provider_ui_state() -> dict[str, Any]:
+        state = app.state.db.get_setting("ui.providers", {}) or {}
+        if not isinstance(state, dict):
+            state = {}
+        return {
+            "active": str(state.get("active") or ""),
+            "last_model": dict(state.get("last_model") or {}),
+            "custom_models": {
+                k: [str(m) for m in v]
+                for k, v in (state.get("custom_models") or {}).items()
+                if isinstance(v, list)
+            },
+        }
+
+    def _save_provider_ui_state(state: dict[str, Any]) -> None:
+        app.state.db.set_setting("ui.providers", state)
+
     # --------------------------------------------------------------- frontend
     @app.get("/api/models")
     async def models() -> dict[str, Any]:
@@ -172,14 +195,103 @@ def create_app(workspace: str | Path | None = None, config: AppConfig | None = N
                 "edit_format": m.edit_format or ("hashline" if m.weak else "str_replace"),
                 "description": m.description,
             })
+        ui_state = _provider_ui_state()
+        for pid, ids in ui_state["custom_models"].items():
+            pc = cfg.find_provider(pid)
+            if pc is None:
+                continue
+            known = {m["id"] for m in groups.get(pid, [])}
+            for mid in ids:
+                if mid in known:
+                    continue
+                groups.setdefault(pid, []).append({
+                    "id": mid, "ref": f"{pid}/{mid}", "name": mid, "provider": pid,
+                    "provider_type": pc.type, "context_window": 0, "tools": True,
+                    "streaming": True, "weak": False, "multimodal": False,
+                    "edit_format": "str_replace", "description": "saved from the UI",
+                })
+        providers = [
+            {"id": p.id, "name": p.name or p.id, "type": p.type, "enabled": p.enabled}
+            for p in cfg.providers
+        ]
+        active = ui_state["active"] if any(p["id"] == ui_state["active"] for p in providers) else ""
+        if not active:
+            dm = (cfg.default_model or "").split("/", 1)[0]
+            active = dm if cfg.find_provider(dm) else (providers[0]["id"] if providers else "")
+        last_model = {pid: mid for pid, mid in ui_state["last_model"].items() if cfg.find_provider(pid)}
         return {
             "groups": groups,
+            "providers": providers,
+            "active_provider": active,
+            "last_model": last_model,
             "default": cfg.default_model or "",
             "roles": {
                 "planner": cfg.roles.planner, "executor": cfg.roles.executor,
                 "summarizer": cfg.roles.summarizer, "subagent": cfg.roles.subagent, "verifier": cfg.roles.verifier,
             },
         }
+
+    @app.post("/api/providers/active")
+    async def provider_active(request: Request) -> dict[str, Any]:
+        """Switch the active provider and/or record the model used with it.
+
+        Body: ``{"provider_id": "..."}`` (switch - returns the provider's own
+        remembered model), ``{"model_ref": "provider/model"}`` (record), or
+        both. The per-provider model memory lives in the settings KV.
+        """
+        body = await request.json()
+        cfg: AppConfig = app.state.config
+        ui_state = _provider_ui_state()
+        provider_id = str(body.get("provider_id") or "")
+        model_ref = str(body.get("model_ref") or "")
+        if model_ref and not provider_id:
+            found = cfg.find_model(model_ref)
+            if found:
+                provider_id = found[0].id
+            elif "/" in model_ref:
+                provider_id = model_ref.split("/", 1)[0]
+        pc = cfg.find_provider(provider_id) if provider_id else None
+        if pc is None:
+            return {"ok": False, "error": f"unknown provider {provider_id!r}"}
+        ui_state["active"] = pc.id
+        model_id = ""
+        if model_ref:
+            model_id = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+            ui_state["last_model"][pc.id] = model_id
+        if not model_id:
+            model_id = str(ui_state["last_model"].get(pc.id, ""))
+        configured = [m.id for m in pc.models]
+        all_known = configured + [m for m in ui_state["custom_models"].get(pc.id, []) if m not in configured]
+        if model_id not in all_known:
+            model_id = all_known[0] if all_known else ""
+            if model_id:
+                ui_state["last_model"][pc.id] = model_id
+            else:
+                ui_state["last_model"].pop(pc.id, None)
+        _save_provider_ui_state(ui_state)
+        return {"ok": True, "provider_id": pc.id, "model_ref": f"{pc.id}/{model_id}" if model_id else ""}
+
+    @app.post("/api/providers/models")
+    async def provider_models_add(request: Request) -> dict[str, Any]:
+        """Record a model id under a provider (its own list, UI-level only -
+        config.yaml stays untouched). Visible in the picker after reload."""
+        body = await request.json()
+        cfg: AppConfig = app.state.config
+        provider_id = str(body.get("provider_id") or "")
+        model_id = str(body.get("model_id") or "").strip()
+        pc = cfg.find_provider(provider_id)
+        if pc is None:
+            return {"ok": False, "error": f"unknown provider {provider_id!r}"}
+        if not model_id or len(model_id) > 120 or any(c.isspace() for c in model_id):
+            return {"ok": False, "error": "model_id must be a non-empty id without spaces (e.g. vendor/model)"}
+        ui_state = _provider_ui_state()
+        lst = ui_state["custom_models"].setdefault(pc.id, [])
+        if model_id not in lst and model_id not in [m.id for m in pc.models]:
+            lst.append(model_id)
+            if len(lst) > 100:
+                del lst[:-100]
+        _save_provider_ui_state(ui_state)
+        return {"ok": True, "provider_id": pc.id, "models": lst}
 
     # -------------------------------------------------------------------- fs
     def fs_routes(app: FastAPI) -> None:

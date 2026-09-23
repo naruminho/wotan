@@ -137,6 +137,10 @@ export interface Store {
   modelDefault: string;
   modelSelected: string;
   setModel: (ref: string) => void;
+  providers: { id: string; name: string; type: string; enabled: boolean }[];
+  activeProvider: string;
+  switchProvider: (providerId: string) => Promise<void>;
+  addModel: (providerId: string, modelId: string) => Promise<void>;
   agentMode: "Chat" | "Agent" | "Plan";
   setAgentMode: (m: "Chat" | "Agent" | "Plan") => void;
   permissionMode: "ask" | "edits" | "autonomous";
@@ -213,13 +217,23 @@ export const useStore = create<Store>((set, get) => ({
       (validModes.includes(storedMode || "") ? storedMode : null) ||
       (validModes.includes(health.default_permission_mode || "") ? health.default_permission_mode : null) ||
       "ask";
+    // provider switcher state: server-side memory wins over localStorage so the
+    // toggle is consistent across browsers (each provider keeps its own model)
+    const providers = models.providers || [];
+    const lastModel = models.last_model || {};
+    const activeProvider = models.active_provider || models.default.split("/")[0] || providers[0]?.id || "";
+    const stored = localStorage.getItem(MODEL_KEY) || "";
+    const rememberedRef = lastModel[activeProvider] ? `${activeProvider}/${lastModel[activeProvider]}` : "";
+    const modelSelected = rememberedRef || (stored.startsWith(`${activeProvider}/`) ? stored : models.default);
     set({
       workspace: health.workspace,
       version: health.version,
       initialized: true,
       models: models.groups,
       modelDefault: models.default,
-      modelSelected: localStorage.getItem(MODEL_KEY) || models.default,
+      providers,
+      activeProvider,
+      modelSelected,
       permissionMode: permissionMode as "ask" | "edits" | "autonomous",
     });
     await Promise.all([get().loadTree(), get().loadGit(), get().loadSessions()]);
@@ -401,9 +415,45 @@ export const useStore = create<Store>((set, get) => ({
   models: {},
   modelDefault: "",
   modelSelected: "",
+  providers: [],
+  activeProvider: "",
   setModel: (ref) => {
     localStorage.setItem(MODEL_KEY, ref);
-    set({ modelSelected: ref });
+    const provider = ref.split("/")[0];
+    set({ modelSelected: ref, ...(provider ? { activeProvider: provider } : {}) });
+    // record it on the server: each provider keeps its own last model
+    void api.rememberModel(ref).catch(() => {});
+  },
+  switchProvider: async (providerId) => {
+    if (providerId === get().activeProvider) return;
+    try {
+      const res = await api.setActiveProvider(providerId);
+      if (!res.ok) {
+        get().setToast(res.error || "failed to switch provider");
+        return;
+      }
+      if (res.model_ref) localStorage.setItem(MODEL_KEY, res.model_ref);
+      set({ activeProvider: res.provider_id, modelSelected: res.model_ref || "" });
+      get().setToast(`switched to ${res.provider_id}${res.model_ref ? ` - ${res.model_ref.split("/").slice(1).join("/")}` : ""}`);
+    } catch (e) {
+      get().setToast(String(e));
+    }
+  },
+  addModel: async (providerId, modelId) => {
+    try {
+      const res = await api.addProviderModel(providerId, modelId);
+      if (!res.ok) {
+        get().setToast(res.error || "failed to save model");
+        return;
+      }
+      const models = await api.models();
+      const ref = `${providerId}/${modelId}`;
+      localStorage.setItem(MODEL_KEY, ref);
+      set({ models: models.groups, modelSelected: ref, activeProvider: providerId });
+      get().setToast(`model ${ref} saved`);
+    } catch (e) {
+      get().setToast(String(e));
+    }
   },
   agentMode: "Agent",
   setAgentMode: (m) => set({ agentMode: m }),

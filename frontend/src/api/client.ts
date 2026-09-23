@@ -85,7 +85,29 @@ export const api = {
   gitUnstage: (paths: string[]) => req<{ ok: boolean; output: string }>("/api/git/unstage", { method: "POST", body: JSON.stringify({ paths }) }),
   gitCommit: (message: string) => req<{ ok: boolean; output: string }>("/api/git/commit", { method: "POST", body: JSON.stringify({ message }) }),
   models: () =>
-    req<{ groups: Record<string, ModelInfo[]>; default: string; roles: Record<string, string> }>("/api/models"),
+    req<{
+      groups: Record<string, ModelInfo[]>;
+      providers?: { id: string; name: string; type: string; enabled: boolean }[];
+      active_provider?: string;
+      last_model?: Record<string, string>;
+      default: string;
+      roles: Record<string, string>;
+    }>("/api/models"),
+  setActiveProvider: (providerId: string, modelRef?: string) =>
+    req<{ ok: boolean; provider_id: string; model_ref: string; error?: string }>("/api/providers/active", {
+      method: "POST",
+      body: JSON.stringify(modelRef ? { provider_id: providerId, model_ref: modelRef } : { provider_id: providerId }),
+    }),
+  rememberModel: (modelRef: string) =>
+    req<{ ok: boolean; provider_id: string; model_ref: string; error?: string }>("/api/providers/active", {
+      method: "POST",
+      body: JSON.stringify({ model_ref: modelRef }),
+    }),
+  addProviderModel: (providerId: string, modelId: string) =>
+    req<{ ok: boolean; provider_id: string; models?: string[]; error?: string }>("/api/providers/models", {
+      method: "POST",
+      body: JSON.stringify({ provider_id: providerId, model_id: modelId }),
+    }),
   settings: () => req<{ yaml: string; path: string; summary: any }>("/api/settings"),
   saveSettings: (yaml: string) => req<{ ok: boolean; error?: string; path?: string }>("/api/settings", { method: "POST", body: JSON.stringify({ yaml }) }),
   testConnection: (providerId: string) =>
