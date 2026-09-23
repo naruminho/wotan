@@ -184,3 +184,23 @@ frontend/ (React + TypeScript + Vite)
     native table, timeline, chart, image with caption, takeaway lines) built
     shape-by-shape so any engine renders them - no template-name dependency,
     no gradients, no glossy fills.
+13. **All site-specific provider code lives OUTSIDE the package** - the
+    update-proof rule. Deployments that cannot carry patches (work machines
+    tracking upstream wotan) keep every customization in user land:
+    corporate gateways are `generic_http` (pure YAML) or `custom_*.py`
+    plugins loaded from `%USERPROFILE%\.wotan\providers\` (workspace
+    `.wotan/providers/` also works), and OpenRouter ships the same way -
+    `examples/providers/custom_openrouter.py`, deployed as
+    `type: custom` + `plugin: custom_openrouter`, NOT a builtin `type:`.
+    Stock `config.py` already whitelists `custom`, so an upgrade of wotan
+    never breaks the setup and the plugin is the single source of truth.
+    The plugin subclasses `OpenAICompatProvider` (absolute imports only -
+    plugins load by file path), applies OpenRouter defaults (base_url,
+    `HTTP-Referer`/`X-Title` attribution with user override, public
+    `/models` catalog) and adds `fetch_credits()` (`/credits`); retries,
+    streaming and tool calls come from the shared adapter, and the
+    `: OPENROUTER PROCESSING` SSE keep-alive comments are already ignored
+    by the parser (regression-tested). Only generic, upstream-safe
+    niceties stay in core: doctor's duck-typed `fetch_credits`/catalog
+    checks run for ANY provider exposing those members and simply
+    disappear on stock builds - never a breakage.

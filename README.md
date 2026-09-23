@@ -63,8 +63,18 @@ endpoint.
   sub-agent), textual tool protocol with auto-repair (`<<<WOTAN_TOOL>>>`,
   fenced and bare-JSON fallbacks, trailing-comma/unquoted-key repair),
   hashline edits, reduced tool sets.
-- **Corporate gateway integration** (config-only): OpenAI-compatible and
-  Anthropic providers plus a fully declarative `generic_http` provider
+- **Provider switcher (UI)**: one click in the chat header alternates between
+  configured providers (e.g. OpenRouter <-> the corporate gateway); each side
+  records its OWN last-used model and restores it on switch (server-side,
+  survives restarts, shared across browsers), and models can be saved from
+  the picker per provider without touching config.yaml.
+- **Corporate gateway integration, update-proof**: OpenAI-compatible,
+  Anthropic and **OpenRouter** (one key, hundreds of models; `wotan doctor`
+  shows the live model catalog and key credits) providers plus a fully
+  declarative `generic_http` provider. Every site-specific adapter lives
+  OUTSIDE the package - pure-YAML `generic_http`, or `custom_*.py` files in
+  `%USERPROFILE%\.wotan\providers\` (OpenRouter ships ready-made in
+  `examples/providers/`) - so upgrading wotan never breaks them
   (Jinja2 request bodies, role mapping, JSONPath/JMESPath response extraction,
   SSE/NDJSON streaming, native or textual tool calls, multimodal
   images/documents), YAML-defined external workflow tools, auth

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useStore, type ChatItem } from "../state/store";
 import ToolCard from "./ToolCard";
 import ModelPicker from "./ModelPicker";
+import ProviderToggle from "./ProviderToggle";
 import { renderMarkdown } from "../util/markdown";
 import { api } from "../api/client";
 
@@ -265,6 +266,7 @@ export default function ChatPanel() {
     <div className="chat-panel" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <div className="chat-header">
         <span className="title">Wotan</span>
+        <ProviderToggle />
         <ModelPicker />
         <button title="New session" onClick={newSession}>new</button>
       </div>
